@@ -24,9 +24,13 @@ from .const import (
     EXT_RESTORE,
     EXT_RESTORE_NOTIFY,
     FAN_ROLES,
+    CONF_MIN_TEMP,
+    DEFAULT_MIN_TEMP,
     OFFSET_MAX,
     OFFSET_MIN,
     OFFSET_STEP,
+    OVERRIDE_HYSTERESIS,
+    OVERRIDE_MIN_TOGGLE_INTERVAL,
     STORE_VERSION,
 )
 
@@ -111,6 +115,10 @@ class DriftManager:
     offsets: dict[str, float] = field(default_factory=dict)
     # rooms whose offset changed while off: the new offset is applied on the next turn-on from HA
     offset_pending: set[str] = field(default_factory=set)
+    # Max cooling override: per-room switch, rooms whose power the override has paused, last toggle time
+    override: dict[str, bool] = field(default_factory=dict)
+    override_paused: set[str] = field(default_factory=set)
+    override_last_toggle: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.store = Store(self.hass, STORE_VERSION, store_key(self.coordinator.config_entry.entry_id))
@@ -132,10 +140,13 @@ class DriftManager:
             except (TypeError, ValueError):
                 continue
         self.offset_pending = {str(k) for k in data.get("offset_pending") or []}
+        self.override = {k: bool(v) for k, v in (data.get("override") or {}).items() if v}
+        self.override_paused = {str(k) for k in data.get("override_paused") or [] if self.override.get(str(k))}
 
     def _data_to_save(self) -> dict[str, Any]:
         return {"desired": self.desired, "auto_restore": self.auto_restore, "prev_fan": self.prev_fan,
-                "offsets": self.offsets, "offset_pending": sorted(self.offset_pending)}
+                "offsets": self.offsets, "offset_pending": sorted(self.offset_pending),
+                "override": self.override, "override_paused": sorted(self.override_paused)}
 
     @callback
     def _save(self) -> None:
@@ -188,6 +199,8 @@ class DriftManager:
             values.pop("fan")
             values["power"] = False
         self.desired.setdefault(zone_key, {}).update(values)
+        if "power" in values:
+            self.override_paused.discard(zone_key)  # an explicit power intent (user) ends a pause
         if "target" in values:
             self.offset_pending.discard(zone_key)  # the target is being driven with the current offset
         self.episodes.pop(zone_key, None)  # a new intent ends any drift episode
@@ -225,6 +238,158 @@ class DriftManager:
         self.auto_restore[zone_key] = on
         self._save()
         self.coordinator.notify_health()
+
+    # ---------------------------------------------------------------- max cooling override
+    def is_override(self, zone_key: str) -> bool:
+        return self.override.get(zone_key, False)
+
+    def is_paused(self, zone_key: str) -> bool:
+        """Room power is off because of the override (desired state stays Cool/on)."""
+        return self.is_override(zone_key) and zone_key in self.override_paused
+
+    def _find_zone(self, zone_key: str) -> HvacZone | None:
+        for cd in (self.coordinator.data or {}).values():
+            if zone_key in cd.zones:
+                return cd.zones[zone_key]
+        return None
+
+    @callback
+    def set_override(self, zone_key: str, on: bool) -> None:
+        if on == self.is_override(zone_key):
+            return
+        zone = self._find_zone(zone_key)
+        if on:
+            self.override[zone_key] = True
+            want = self.desired.setdefault(zone_key, {})
+            if want.get("target") is None and zone is not None and zone.setpoint is not None:
+                want["target"] = self.coordinator.from_device(zone_key, zone.setpoint)  # keep the shown target
+        else:
+            self.override.pop(zone_key, None)
+            was_paused = zone_key in self.override_paused
+            self.override_paused.discard(zone_key)
+            self.override_last_toggle.pop(zone_key, None)
+            if zone is not None:
+                self._resume_normal(zone, was_paused)
+        self.episodes.pop(zone_key, None)
+        self._save()
+        self.coordinator.notify_health()
+
+    def _resume_normal(self, zone: HvacZone, was_paused: bool) -> None:
+        """Override switched off: power a paused room back on and apply the setpoint normally."""
+        want = self.desired.get(zone.key, {})
+        if want.get("power") is False:
+            return  # the user turned the room off: stay off
+        expected: dict[str, Any] = {}
+        if was_paused:
+            expected["power"] = True
+            fan = self._resume_fan(zone)
+            if fan:
+                expected["fan"] = fan
+        if want.get("target") is not None:
+            expected["target"] = want["target"]
+        if not expected or (zone.power is not False and self.coordinator.zone_matches_target(zone, expected)):
+            return
+        self._start_override_command(zone, expected, "max cooling override off", fan_if_differs=True)
+
+    def _resume_fan(self, zone: HvacZone) -> str | None:
+        fan = self.prev_fan.get(zone.key) or self.desired.get(zone.key, {}).get("fan")
+        return fan if fan in FAN_ROLES else None
+
+    def _start_override_command(
+        self, zone: HvacZone, expected: dict[str, Any], description: str, fan_if_differs: bool = False
+    ) -> None:
+        self.restoring.add(zone.key)  # keeps drift detection away until the command is done
+        self.coordinator.start_sequence(
+            zone.key, lambda seq: self._async_override_command(zone, expected, description, fan_if_differs, seq))
+
+    async def _async_override_command(
+        self, zone: HvacZone, expected: dict[str, Any], description: str, fan_if_differs: bool, seq: Any = None
+    ) -> None:
+        from .api import MsheirebError
+        from .coordinator import SequenceSuperseded
+
+        try:
+            async with self.coordinator.command_lock(zone.contract_id):
+                if seq is not None:
+                    if seq.cancelled:
+                        raise SequenceSuperseded
+                    seq.started = True
+                fresh = await self.coordinator.async_read_zone(zone) or zone
+                if self.coordinator.zone_matches_target(fresh, expected):
+                    return
+                await self.coordinator.async_command(
+                    fresh, expected, description, self.coordinator.pulse_interval,
+                    set_desired=False, fan_if_differs=fan_if_differs,
+                )
+        except MsheirebError as err:
+            _LOGGER.warning("Max cooling override command for %s failed: %s", zone.room_name, err)
+        finally:
+            self.restoring.discard(zone.key)
+        self.coordinator.schedule_refresh_after_command()
+
+    @callback
+    def evaluate_override(self, data: MsheirebData) -> None:
+        """Hysteresis control of room power around the target (runs on every coordinator update)."""
+        min_temp = float(self._opts.get(CONF_MIN_TEMP, DEFAULT_MIN_TEMP))
+        now = time.monotonic()
+        for cd in data.values():
+            if cd.controller_connected is False:
+                continue
+            for key, zone in cd.zones.items():
+                if not self.is_override(key):
+                    continue
+                want = self.desired.get(key, {})
+                paused = key in self.override_paused
+                if want.get("power") is False:
+                    self.override_paused.discard(key)  # user turned the room off: stay off
+                    continue
+                if zone.power is None:
+                    continue
+                if self._in_flight(zone):
+                    continue
+                target = want.get("target")
+                if target is None:
+                    continue
+                target = float(target)
+                temp = zone.room_temperature
+                continuous = target <= min_temp + 0.001
+                if continuous:
+                    desired_on = True
+                elif temp is None:
+                    continue
+                elif temp < target - OVERRIDE_HYSTERESIS - 1e-9:
+                    desired_on = False
+                elif temp >= target + OVERRIDE_HYSTERESIS - 1e-9:
+                    desired_on = True
+                else:
+                    desired_on = zone.power  # between the thresholds: keep the current state
+                if desired_on == zone.power:
+                    if desired_on and paused:
+                        self.override_paused.discard(key)  # powered on outside the override: not paused
+                        self._save()
+                    continue
+                if not paused and not zone.power:
+                    continue  # off but not paused by us: that is drift, not the override
+                last = self.override_last_toggle.get(key)
+                if not (continuous and desired_on) and last is not None \
+                        and now - last < OVERRIDE_MIN_TOGGLE_INTERVAL:
+                    continue
+                self.override_last_toggle[key] = now
+                if desired_on:
+                    self.override_paused.discard(key)
+                    expected: dict[str, Any] = {"power": True}
+                    fan = self._resume_fan(zone)
+                    if fan:
+                        expected["fan"] = fan
+                    self._save()
+                    self._start_override_command(zone, expected, "max cooling override: power on", True)
+                else:
+                    fan = zone.fan_mode(FAN_ROLES)
+                    if fan and fan != FAN_OFF:
+                        self.remember_fan(key, fan)
+                    self.override_paused.add(key)
+                    self._save()
+                    self._start_override_command(zone, {"power": False}, "max cooling override: power off")
 
     @callback
     def mark_handled(self, zone_key: str) -> None:
@@ -275,6 +440,11 @@ class DriftManager:
                     diff.pop("fan", None)  # fan speed is irrelevant while the room is off
                     if key in self.offset_pending:
                         diff.pop("target", None)  # new offset: applied on the next turn-on from HA
+                if self.is_override(key):
+                    diff.pop("target", None)  # the AC stays at max cooling; the shown target is virtual
+                    if key in self.override_paused:
+                        diff.pop("power", None)  # paused by the override: not an external change
+                        diff.pop("fan", None)
                 ep = self.episodes.get(key)
                 if not diff:
                     if ep is not None:

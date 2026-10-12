@@ -380,6 +380,7 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
                 self.alerts.clear(key)
         self._evaluate_commands(data)
         self.drift.evaluate(data)
+        self.drift.evaluate_override(data)
 
     # ---------------------------------------------------------------- commands
     async def async_read_zone(self, zone: HvacZone) -> HvacZone | None:

@@ -29,6 +29,9 @@ async def async_setup_entry(
                     ent = AutoRestoreSwitch(coordinator, zone, zone_needs_disambiguation(cd, zone))
                     ent.entity_id = room_entity_id("switch", cd, zone, "auto restore")
                     new.append(ent)
+                    ovr = MaxCoolingOverrideSwitch(coordinator, zone, zone_needs_disambiguation(cd, zone))
+                    ovr.entity_id = room_entity_id("switch", cd, zone, "max cooling override")
+                    new.append(ovr)
         if new:
             async_add_entities(new)
 
@@ -68,3 +71,29 @@ class AutoRestoreSwitch(SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         self.coordinator.drift.set_auto_restore(self._zone_key, False)
+
+
+class MaxCoolingOverrideSwitch(AutoRestoreSwitch):
+    """Per-room 'Max cooling override': the AC stays at max cooling, HA cycles its power around the target."""
+
+    _attr_translation_key = "max_cooling_override"
+    _attr_icon = "mdi:snowflake-thermometer"
+
+    def __init__(self, coordinator: MsheirebCoordinator, zone, disambiguate: bool = False) -> None:
+        super().__init__(coordinator, zone, disambiguate)
+        self._attr_unique_id = f"{zone.key}_max_cooling_override"
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.drift.is_override(self._zone_key)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        drift = self.coordinator.drift
+        return {"paused": drift.is_paused(self._zone_key), "target": drift.desired.get(self._zone_key, {}).get("target")}
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        self.coordinator.drift.set_override(self._zone_key, True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        self.coordinator.drift.set_override(self._zone_key, False)

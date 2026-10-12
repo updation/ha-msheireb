@@ -132,6 +132,13 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
     def _opt(self, name: str, actual: Any) -> Any:
         return self._intent[name] if name in self._intent else actual
 
+    def _power(self, zone: HvacZone | None) -> bool | None:
+        """Requested/actual power; a room paused by the max cooling override still counts as on."""
+        actual = zone.power if zone else None
+        if KIND_POWER not in self._intent and self.coordinator.drift.is_paused(self._zone_key):
+            return True
+        return self._opt("power", actual)
+
     @callback
     def _handle_coordinator_update(self) -> None:
         # the requested values win over every reading until the sequence and all its retries are
@@ -150,6 +157,11 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
     def target_temperature(self) -> float | None:
         # the AC runs at target + offset; HA shows the target (AC setpoint - offset)
         zone = self.zone
+        if self.coordinator.drift.is_override(self._zone_key):
+            # the AC stays at max cooling: the shown target only drives the override's hysteresis
+            shown = self.coordinator.drift.desired.get(self._zone_key, {}).get(KIND_TARGET)
+            if shown is not None:
+                return self._opt("target", float(shown))
         actual = None
         if zone is not None and zone.setpoint is not None:
             actual = self.coordinator.from_device(self._zone_key, zone.setpoint)
@@ -158,7 +170,7 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
     @property
     def hvac_mode(self) -> HVACMode | None:
         zone = self.zone
-        power = self._opt("power", zone.power if zone else None)
+        power = self._power(zone)
         if power is None:
             return None
         return HVACMode.COOL if power else HVACMode.OFF
@@ -168,7 +180,7 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         # kept in step with the HVAC mode: 'off' while the room is (or is being turned) off,
         # otherwise the requested/actual speed
         zone = self.zone
-        if self._fan_off and self._opt("power", zone.power if zone else None) is False:
+        if self._fan_off and self._power(zone) is False:
             return FAN_OFF
         return self._opt("fan", zone.fan_mode(self._fan_roles) if zone else None)
 
@@ -177,7 +189,12 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         zone = self.zone
         if zone is None:
             return {}
+        drift = self.coordinator.drift
+        override: dict[str, Any] = {"max_cooling_override": drift.is_override(self._zone_key)}
+        if override["max_cooling_override"]:
+            override["override_state"] = "idle" if drift.is_paused(self._zone_key) else "cooling"
         return {
+            **override,
             "room": zone.room_name,
             "device_id": zone.device_id,
             "control_sn": {role: c.sn for role, c in zone.controls.items()},
@@ -194,6 +211,9 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         re-drive the AC to target + new offset (normal queue, debounced like temperature taps)."""
         zone = self.zone
         if zone is None:
+            return
+        if self.coordinator.drift.is_override(self._zone_key):
+            self.async_write_ha_state()  # the AC stays at max cooling: no setpoint to re-drive
             return
         if KIND_TARGET in self._intent:
             target = self._intent[KIND_TARGET]
@@ -266,7 +286,8 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         fan_auto = bool(self._entry.options.get(CONF_FAN_AUTO_WHEN_OFF, DEFAULT_FAN_AUTO_WHEN_OFF))
         self._intent[KIND_POWER] = want_on
         self._fan_if_differs = False
-        if want_on and zone.key in drift.offset_pending and KIND_TARGET not in self._intent:
+        if want_on and zone.key in drift.offset_pending and KIND_TARGET not in self._intent \
+                and not drift.is_override(zone.key):
             # the offset changed while off: drive the AC to target + new offset after power-on
             target = drift.desired.get(zone.key, {}).get(KIND_TARGET)
             if target is None and zone.setpoint is not None:
@@ -327,7 +348,7 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         if fan_mode not in self._fan_roles:
             raise HomeAssistantError(f"Unsupported fan mode {fan_mode}")
         zone = self._require_zone()
-        if self._fan_off and self._opt(KIND_POWER, zone.power) is False:
+        if self._fan_off and self._power(zone) is False:
             # a speed chosen while off: turn on, then (after the power -> fan delay) that speed;
             # it replaces the remembered speed
             self.coordinator.drift.remember_fan(zone.key, fan_mode)
@@ -355,11 +376,19 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
             current = zone.setpoint
             if current is None:
                 raise HomeAssistantError(f"{self.name}: current setpoint unknown")
-            needed = round((self.coordinator.device_target(zone.key, target) - current) / TEMP_STEP)
+            override = self.coordinator.drift.is_override(zone.key)
+            needed = 0 if override else round((self.coordinator.device_target(zone.key, target) - current) / TEMP_STEP)
             if needed:
                 role = ROLE_TEMP_UP if needed > 0 else ROLE_TEMP_DOWN
                 if role not in zone.controls:
                     raise HomeAssistantError(f"{self.name}: no {role} control")
-            self._intent[KIND_TARGET] = target
-            debounce = TEMP_DEBOUNCE  # rapid +/- taps: one target, pressed after the taps stop
+            if override:
+                # max cooling override: no setpoint presses, the target only drives the hysteresis
+                self.coordinator.drift.set_desired(zone.key, {KIND_TARGET: target})
+                self.async_write_ha_state()
+                if mode is None:
+                    return
+            else:
+                self._intent[KIND_TARGET] = target
+                debounce = TEMP_DEBOUNCE  # rapid +/- taps: one target, pressed after the taps stop
         await self._start_if_needed(zone, debounce)

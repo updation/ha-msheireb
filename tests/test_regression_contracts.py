@@ -44,7 +44,7 @@ async def test_entities_created_when_entry_has_tokens_but_no_contracts(hass, aio
     climates = sorted(s.entity_id for s in hass.states.async_all("climate"))
     assert climates == ["climate.msheireb_demo01_bedroom_1", "climate.msheireb_demo01_dining_room",
                         "climate.msheireb_demo01_master_bedroom"]
-    assert len(hass.states.async_all("switch")) == 3
+    assert len(hass.states.async_all("switch")) == 6  # auto-restore + max cooling override per room
     assert hass.states.get("climate.msheireb_demo01_dining_room").attributes["current_temperature"] == 21.5
     assert len(_calls(aioclient_mock, "/user/login")) == 1  # one login to obtain the contract list
     assert entry.data["contracts"][0]["id"] == 4242  # persisted for next restart

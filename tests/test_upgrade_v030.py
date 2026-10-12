@@ -59,7 +59,7 @@ async def test_v030_entry_with_old_registry_upgrades_to_room_devices(hass, aiocl
 
     assert entry.state is ConfigEntryState.LOADED
     assert {s.entity_id for s in hass.states.async_all("climate")} == ROOMS
-    assert len(hass.states.async_all("switch")) == 3
+    assert len(hass.states.async_all("switch")) == 6  # auto-restore + max cooling override per room
     assert entry.data["contracts"][0]["id"] == 4242
 
     # per-room devices, attached to the apartment, carrying the running version
@@ -79,6 +79,7 @@ async def test_v030_entry_with_old_registry_upgrades_to_room_devices(hass, aiocl
     dining = dev_reg.async_get(moved.device_id)
     names = {e.entity_id for e in er.async_entries_for_device(ent_reg, dining.id)}
     assert names == {"climate.msheireb_demo01_dining_room", "switch.msheireb_demo01_dining_room_auto_restore",
+                     "switch.msheireb_demo01_dining_room_max_cooling_override",
                      "sensor.msheireb_demo01_dining_room_last_command",
                      "number.msheireb_demo01_dining_room_target_temperature_offset"}
 
@@ -101,7 +102,7 @@ async def test_rooms_appearing_after_first_refresh_are_added(hass, aioclient_moc
     await entry.runtime_data.async_refresh()
     await hass.async_block_till_done()
     assert {s.entity_id for s in hass.states.async_all("climate")} == ROOMS
-    assert len(hass.states.async_all("switch")) == 3
+    assert len(hass.states.async_all("switch")) == 6  # auto-restore + max cooling override per room
 
 
 async def test_no_contracts_is_visible_setup_retry(hass, aioclient_mock, smart_home_payload):

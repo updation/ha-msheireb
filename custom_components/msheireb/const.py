@@ -120,3 +120,7 @@ DEFAULT_DRIFT_GRACE = 60  # seconds of sustained drift (and >= DRIFT_MIN_POLLS p
 DEFAULT_ADOPT_EXTERNAL = False
 DRIFT_MIN_POLLS = 2
 STORE_VERSION = 1
+
+# Max cooling override: the integration cycles room power around the target with hysteresis
+OVERRIDE_HYSTERESIS = 0.5  # °C: off below target - 0.5, on at target + 0.5 or more
+OVERRIDE_MIN_TOGGLE_INTERVAL = 180.0  # s: minimum time between override power toggles per room

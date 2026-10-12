@@ -164,6 +164,9 @@
     "switch": {
       "auto_restore": {
         "name": "Auto-restore"
+      },
+      "max_cooling_override": {
+        "name": "Max cooling override"
       }
     },
     "number": {
