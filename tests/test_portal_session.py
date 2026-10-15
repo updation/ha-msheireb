@@ -248,9 +248,9 @@ def test_bookmarklet_in_strings_and_valid_js(tmp_path):
 async def test_session_steps_get_bookmarklet_placeholder(hass):
     from custom_components.msheireb.const import BOOKMARKLET
     result = await _start(hass)
-    assert result["description_placeholders"] == {"bookmarklet": BOOKMARKLET}
+    assert result["description_placeholders"]["bookmarklet"] == BOOKMARKLET
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"refresh_token": "a b"})
-    assert result["description_placeholders"] == {"bookmarklet": BOOKMARKLET}
+    assert result["description_placeholders"]["bookmarklet"] == BOOKMARKLET
     entry = MockConfigEntry(domain=DOMAIN, data={**ENTRY_DATA, "password": ""}, unique_id="1263")
     entry.add_to_hass(hass)
     result = await entry.start_reauth_flow(hass)

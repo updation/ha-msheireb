@@ -24,6 +24,7 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
+from . import session_webhook
 from .api import (
     MsheirebApi,
     MsheirebAuthError,
@@ -138,8 +139,13 @@ class MsheirebNoContracts(MsheirebError):
     """The session is valid but no contracts could be loaded."""
 
 
-def _session_placeholders() -> dict[str, str]:
-    return {"bookmarklet": BOOKMARKLET}
+def _session_placeholders(url: str | None = None) -> dict[str, str]:
+    return {
+        "bookmarklet": BOOKMARKLET,
+        "send_bookmarklet": session_webhook.send_bookmarklet(url) if url else
+        "(Home Assistant has no internal or external URL configured: set one under Settings > System > Network, or use option B.)",
+        "webhook_url": url or "(no URL configured)",
+    }
 
 
 def _check_paste(pasted: str) -> tuple[str | None, str | None]:
@@ -151,7 +157,7 @@ def _check_paste(pasted: str) -> tuple[str | None, str | None]:
 
 
 def _session_schema() -> vol.Schema:
-    return vol.Schema({vol.Required(CONF_REFRESH_TOKEN): TextSelector(TextSelectorConfig(multiline=True))})
+    return vol.Schema({vol.Optional(CONF_REFRESH_TOKEN, default=""): TextSelector(TextSelectorConfig(multiline=True))})
 
 
 class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -184,16 +190,60 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     async def async_step_portal_session(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        async def finish(info: dict[str, Any]) -> ConfigFlowResult:
+            await self.async_set_unique_id(info["unique_id"])
+            self._abort_if_unique_id_configured()
+            return self.async_create_entry(
+                title=f"Msheireb ({info['email']})" if info["email"] else "Msheireb",
+                data=info["data"],
+            )
+
+        return await self._async_session_step("portal_session", user_input, "", finish)
+
+    # --- shared portal-session step (paste or one-tap webhook) ---
+
+    session_waiting: bool = False
+    _received_info: dict[str, Any] | None = None
+    _session_fallback_email: str = ""
+
+    async def async_receive_session(self, text: str) -> bool:
+        """Called by the webhook: parse + validate a session sent by the bookmarklet. Never logs it."""
+        if not self.session_waiting:
+            return False
+        token = parse_refresh_token(text)
+        if not token:
+            _LOGGER.debug("Session webhook: received value was not a recognisable session")
+            return False
+        try:
+            info = await _validate_session(
+                self.hass, token, self._session_fallback_email, parse_contracts(text)
+            )
+        except MsheirebError as err:
+            _LOGGER.debug("Session webhook: portal rejected the session (%s)", type(err).__name__)
+            return False
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Session webhook: unexpected error validating the session")
+            return False
+        self._received_info = info
+        _LOGGER.info("Portal session received via Send to HA; tap Submit to finish")
+        return True
+
+    async def _async_session_step(self, step_id, user_input, fallback_email, finish) -> ConfigFlowResult:
+        self._session_fallback_email = fallback_email
         errors: dict[str, str] = {}
         if user_input is not None:
-            token, bad = _check_paste(user_input[CONF_REFRESH_TOKEN])
+            pasted = user_input.get(CONF_REFRESH_TOKEN) or ""
+            if not clean_paste(pasted) and self._received_info is not None:
+                info, self._received_info = self._received_info, None
+                self.session_waiting = False
+                result = await finish(info)
+                return result
+            token, bad = _check_paste(pasted)
             if bad:
                 errors["base"] = bad
             else:
                 try:
-                    info = await _validate_session(
-                        self.hass, token, contracts=parse_contracts(user_input[CONF_REFRESH_TOKEN])
-                    )
+                    info = await _validate_session(self.hass, token, fallback_email, parse_contracts(pasted))
                 except MsheirebNoContracts:
                     errors["base"] = "no_contracts"
                 except MsheirebAuthError:
@@ -204,18 +254,23 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
                     _LOGGER.exception("Unexpected error during portal session sign-in")
                     errors["base"] = "unknown"
                 else:
-                    await self.async_set_unique_id(info["unique_id"])
-                    self._abort_if_unique_id_configured()
-                    return self.async_create_entry(
-                        title=f"Msheireb ({info['email']})" if info["email"] else "Msheireb",
-                        data=info["data"],
-                    )
+                    self.session_waiting = False
+                    return await finish(info)
+        wid = await session_webhook.async_attach(self.hass, self)
+        self.session_waiting = True
+        url = session_webhook.webhook_url(self.hass, wid)
         return self.async_show_form(
-            step_id="portal_session",
+            step_id=step_id,
             data_schema=_session_schema(),
             errors=errors,
-            description_placeholders=_session_placeholders(),
+            description_placeholders=_session_placeholders(url),
         )
+
+    @callback
+    def async_remove(self) -> None:
+        self.session_waiting = False
+        self._received_info = None
+        session_webhook.async_detach(self.hass, self)
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
         if not entry_data.get(CONF_PASSWORD):
@@ -275,37 +330,14 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         entry = self._get_reauth_entry()
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            token, bad = _check_paste(user_input[CONF_REFRESH_TOKEN])
-            if bad:
-                errors["base"] = bad
-            else:
-                try:
-                    info = await _validate_session(
-                        self.hass,
-                        token,
-                        entry.data.get(CONF_EMAIL, ""),
-                        parse_contracts(user_input[CONF_REFRESH_TOKEN]),
-                    )
-                except MsheirebNoContracts:
-                    errors["base"] = "no_contracts"
-                except MsheirebAuthError:
-                    errors["base"] = "invalid_session"
-                except MsheirebError:
-                    errors["base"] = "cannot_connect"
-                except Exception:  # noqa: BLE001
-                    _LOGGER.exception("Unexpected error during portal session reauth")
-                    errors["base"] = "unknown"
-                else:
-                    await self.async_set_unique_id(info["unique_id"])
-                    self._abort_if_unique_id_mismatch(reason="wrong_account")
-                    return self.async_update_reload_and_abort(entry, data_updates=info["data"])
-        return self.async_show_form(
-            step_id="reauth_portal_session",
-            data_schema=_session_schema(),
-            errors=errors,
-            description_placeholders=_session_placeholders(),
+
+        async def finish(info: dict[str, Any]) -> ConfigFlowResult:
+            await self.async_set_unique_id(info["unique_id"])
+            self._abort_if_unique_id_mismatch(reason="wrong_account")
+            return self.async_update_reload_and_abort(entry, data_updates=info["data"])
+
+        return await self._async_session_step(
+            "reauth_portal_session", user_input, entry.data.get(CONF_EMAIL, ""), finish
         )
 
     @staticmethod
