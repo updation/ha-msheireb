@@ -83,6 +83,7 @@ async def test_config_flow_stores_contracts(hass, aioclient_mock, smart_home_pay
     from homeassistant import config_entries
     _mock_portal(aioclient_mock, smart_home_payload)
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": "password"})
     with patch("custom_components.msheireb.async_setup_entry", return_value=True):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"], {"email": "me@example.com", "password": "pw"})

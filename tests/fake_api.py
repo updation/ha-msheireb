@@ -9,6 +9,9 @@ class FakeApi:
     payload: dict = {}
     controller = "connected"
     fail_login = None  # exception to raise on login
+    fail_refresh = None  # exception to raise when signing in with a refresh token
+    sign_in_contracts = None  # contracts argument last passed to the refresh-token sign-in
+    no_contracts = False  # sign-in without pasted contracts finds none
     fail_fetch = None  # exception to raise on data fetch
     ignore_commands = False  # simulate presses the AC never registers
     drop_pulses = 0  # drop the next N presses (simulate missed presses)
@@ -33,6 +36,18 @@ class FakeApi:
         if self._cb:
             self._cb("A", "R", 9e9)
         return {"access_token": "A", "user": {"id": 1263}, "contracts": self.contracts}
+
+    async def async_sign_in_with_refresh_token(self, refresh_token, contracts=None):
+        if FakeApi.fail_refresh:
+            raise FakeApi.fail_refresh
+        self.access_token, self.refresh_token, self.expires_at = "SA", "SR", 9e9
+        self.user = {"id": 1263, "email": "sess@example.com"}
+        FakeApi.sign_in_contracts = contracts
+        if contracts:
+            self.contracts = contracts
+        elif FakeApi.no_contracts:
+            self.contracts = []
+        return {"user": self.user, "contracts": self.contracts}
 
     async def async_get_contracts(self):
         if FakeApi.fail_fetch:

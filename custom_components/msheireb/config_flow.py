@@ -24,7 +24,7 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .api import MsheirebApi, MsheirebAuthError, MsheirebError
+from .api import MsheirebApi, MsheirebAuthError, MsheirebError, parse_contracts, parse_refresh_token
 from .const import (
     CONF_CONTRACTS,
     slim_contracts,
@@ -90,19 +90,64 @@ async def _validate(hass: HomeAssistant, email: str, password: str) -> dict[str,
     }
 
 
+def _is_captcha(err: Exception) -> bool:
+    text = str(err).lower()
+    return "captcha" in text or "turnstile" in text
+
+
+def _login_error(err: MsheirebError) -> str:
+    if _is_captcha(err):
+        return "captcha_required"
+    return "invalid_auth" if isinstance(err, MsheirebAuthError) else "cannot_connect"
+
+
+async def _validate_session(
+    hass: HomeAssistant, refresh_token: str, fallback_email: str = "", contracts: list | None = None
+) -> dict[str, Any]:
+    """Sign in with a portal-session refresh token; entry data mirrors password login (password empty)."""
+    api = MsheirebApi(async_get_clientsession(hass), fallback_email, "")
+    payload = await api.async_sign_in_with_refresh_token(refresh_token, contracts=contracts or None)
+    user = payload.get("user") or {}
+    if not api.contracts:
+        raise MsheirebNoContracts("no contracts returned for this session")
+    email = str(user.get("email") or fallback_email or "")
+    return {
+        "unique_id": str(user.get("id") or email.lower()),
+        "email": email,
+        "data": {
+            CONF_EMAIL: email,
+            CONF_PASSWORD: "",
+            CONF_ACCESS_TOKEN: api.access_token,
+            CONF_REFRESH_TOKEN: api.refresh_token,
+            CONF_EXPIRES_AT: api.expires_at,
+            CONF_CONTRACTS: slim_contracts(api.contracts),
+        },
+        "contracts": len(api.contracts),
+    }
+
+
+class MsheirebNoContracts(MsheirebError):
+    """The session is valid but no contracts could be loaded."""
+
+
+def _session_schema() -> vol.Schema:
+    return vol.Schema({vol.Required(CONF_REFRESH_TOKEN): TextSelector(TextSelectorConfig(multiline=True))})
+
+
 class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        return self.async_show_menu(step_id="user", menu_options=["password", "portal_session"])
+
+    async def async_step_password(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
             email = user_input[CONF_EMAIL].strip()
             try:
                 info = await _validate(self.hass, email, user_input[CONF_PASSWORD])
-            except MsheirebAuthError:
-                errors["base"] = "invalid_auth"
-            except MsheirebError:
-                errors["base"] = "cannot_connect"
+            except MsheirebError as err:
+                errors["base"] = _login_error(err)
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Unexpected error during login")
                 errors["base"] = "unknown"
@@ -111,17 +156,53 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(title=f"Msheireb ({email})", data=info["data"])
         return self.async_show_form(
-            step_id="user",
+            step_id="password",
             data_schema=vol.Schema(
                 {vol.Required(CONF_EMAIL): EMAIL_SELECTOR, vol.Required(CONF_PASSWORD): PASSWORD_SELECTOR}
             ),
             errors=errors,
         )
 
+    async def async_step_portal_session(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            token = parse_refresh_token(user_input[CONF_REFRESH_TOKEN])
+            if not token:
+                errors["base"] = "invalid_token"
+            else:
+                try:
+                    info = await _validate_session(
+                        self.hass, token, contracts=parse_contracts(user_input[CONF_REFRESH_TOKEN])
+                    )
+                except MsheirebNoContracts:
+                    errors["base"] = "no_contracts"
+                except MsheirebAuthError:
+                    errors["base"] = "invalid_session"
+                except MsheirebError:
+                    errors["base"] = "cannot_connect"
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Unexpected error during portal session sign-in")
+                    errors["base"] = "unknown"
+                else:
+                    await self.async_set_unique_id(info["unique_id"])
+                    self._abort_if_unique_id_configured()
+                    return self.async_create_entry(
+                        title=f"Msheireb ({info['email']})" if info["email"] else "Msheireb",
+                        data=info["data"],
+                    )
+        return self.async_show_form(step_id="portal_session", data_schema=_session_schema(), errors=errors)
+
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        return self.async_show_menu(
+            step_id="reauth_confirm", menu_options=["reauth_password", "reauth_portal_session"]
+        )
+
+    async def async_step_reauth_password(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         entry = self._get_reauth_entry()
@@ -130,10 +211,8 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
             email = user_input.get(CONF_EMAIL, entry.data[CONF_EMAIL]).strip()
             try:
                 info = await _validate(self.hass, email, user_input[CONF_PASSWORD])
-            except MsheirebAuthError:
-                errors["base"] = "invalid_auth"
-            except MsheirebError:
-                errors["base"] = "cannot_connect"
+            except MsheirebError as err:
+                errors["base"] = _login_error(err)
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Unexpected error during reauth")
                 errors["base"] = "unknown"
@@ -142,7 +221,7 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._abort_if_unique_id_mismatch(reason="wrong_account")
                 return self.async_update_reload_and_abort(entry, data_updates=info["data"])
         return self.async_show_form(
-            step_id="reauth_confirm",
+            step_id="reauth_password",
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_EMAIL, default=entry.data.get(CONF_EMAIL, "")): EMAIL_SELECTOR,
@@ -151,6 +230,38 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
             errors=errors,
         )
+
+    async def async_step_reauth_portal_session(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        entry = self._get_reauth_entry()
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            token = parse_refresh_token(user_input[CONF_REFRESH_TOKEN])
+            if not token:
+                errors["base"] = "invalid_token"
+            else:
+                try:
+                    info = await _validate_session(
+                        self.hass,
+                        token,
+                        entry.data.get(CONF_EMAIL, ""),
+                        parse_contracts(user_input[CONF_REFRESH_TOKEN]),
+                    )
+                except MsheirebNoContracts:
+                    errors["base"] = "no_contracts"
+                except MsheirebAuthError:
+                    errors["base"] = "invalid_session"
+                except MsheirebError:
+                    errors["base"] = "cannot_connect"
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Unexpected error during portal session reauth")
+                    errors["base"] = "unknown"
+                else:
+                    await self.async_set_unique_id(info["unique_id"])
+                    self._abort_if_unique_id_mismatch(reason="wrong_account")
+                    return self.async_update_reload_and_abort(entry, data_updates=info["data"])
+        return self.async_show_form(step_id="reauth_portal_session", data_schema=_session_schema(), errors=errors)
 
     @staticmethod
     @callback

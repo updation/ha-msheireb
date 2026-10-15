@@ -2,13 +2,13 @@
   "domain": "msheireb",
   "name": "Msheireb Smart Home",
   "codeowners": [
-    "@sample-of-one"
+    "@updation"
   ],
   "config_flow": true,
-  "documentation": "https://github.com/sample-of-one/ha-msheireb",
+  "documentation": "https://github.com/updation/ha-msheireb",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/sample-of-one/ha-msheireb/issues",
+  "issue_tracker": "https://github.com/updation/ha-msheireb/issues",
   "requirements": [],
-  "version": "0.3.21"
+  "version": "0.3.22"
 }

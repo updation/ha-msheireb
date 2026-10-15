@@ -3,25 +3,59 @@
     "step": {
       "user": {
         "title": "Msheireb resident portal",
+        "description": "Choose how to sign in.",
+        "menu_options": {
+          "password": "Email and password",
+          "portal_session": "Sign in with portal session"
+        }
+      },
+      "password": {
+        "title": "Msheireb resident portal",
         "description": "Use your Msheireb resident portal login.",
         "data": {
           "email": "Email",
           "password": "Password"
         }
       },
+      "portal_session": {
+        "title": "Sign in with portal session",
+        "description": "Sign in at https://web-prod.mp-mdd.com in a browser, then copy the whole value of the browser's localStorage key 'msheireb-auth' and paste it here. It contains the refresh token and your contracts. Pasting only the refresh token works only if the contracts can be loaded separately. Treat the token like a password.",
+        "data": {
+          "refresh_token": "Refresh token"
+        }
+      },
       "reauth_confirm": {
+        "title": "Re-authenticate Msheireb",
+        "description": "The saved login stopped working.",
+        "menu_options": {
+          "reauth_password": "Email and password",
+          "reauth_portal_session": "Sign in with portal session"
+        }
+      },
+      "reauth_password": {
         "title": "Re-authenticate Msheireb",
         "description": "The saved login stopped working. Sign in again.",
         "data": {
           "email": "Email",
           "password": "Password"
         }
+      },
+      "reauth_portal_session": {
+        "title": "Re-authenticate with portal session",
+        "description": "Sign in at https://web-prod.mp-mdd.com in a browser, then copy the whole value of the browser's localStorage key 'msheireb-auth' and paste it here. It contains the refresh token and your contracts. Pasting only the refresh token works only if the contracts can be loaded separately. Treat the token like a password.",
+        "data": {
+          "refresh_token": "Refresh token"
+        }
       }
     },
     "error": {
-      "invalid_auth": "Invalid email or password.",
+      "invalid_auth": "Invalid email or password. If the password is correct, try the 'Sign in with portal session' option instead.",
       "cannot_connect": "Could not reach the Msheireb portal.",
-      "unknown": "Unexpected error."
+      "unknown": "Unexpected error.",
+      "captcha_required": "The portal requires a captcha for password login. Go back and use the 'Sign in with portal session' option.",
+      "invalid_token": "No refresh token found in the pasted text.",
+      "invalid_session": "The portal rejected this refresh token. Sign in at the portal again and copy a fresh one.",
+      "no_contracts": "The session is valid but no contracts were found. Paste the whole msheireb-auth value from localStorage instead of only the token."
     },
     "abort": {
       "already_configured": "This account is already configured.",

@@ -23,6 +23,7 @@ def fake_api(smart_home_payload):
     FakeApi.payload = smart_home_payload
     FakeApi.controller = "connected"
     FakeApi.fail_login = None
+    FakeApi.fail_refresh = None
     FakeApi.fail_fetch = None
     FakeApi.ignore_commands = False
     with patch("custom_components.msheireb.MsheirebApi", FakeApi), \
@@ -42,6 +43,8 @@ async def _setup(hass):
 
 async def test_user_flow_creates_entry(hass):
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    assert result["type"] is FlowResultType.MENU
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": "password"})
     assert result["type"] is FlowResultType.FORM
     with patch("custom_components.msheireb.async_setup_entry", return_value=True):
         result = await hass.config_entries.flow.async_configure(
@@ -56,6 +59,7 @@ async def test_user_flow_creates_entry(hass):
 async def test_user_flow_errors(hass, exc, err):
     FakeApi.fail_login = exc
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": "password"})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"email": "me@example.com", "password": "bad"})
     assert result["errors"] == {"base": err}
@@ -64,7 +68,8 @@ async def test_user_flow_errors(hass, exc, err):
 async def test_reauth_flow(hass):
     entry, _ = await _setup(hass)
     result = await entry.start_reauth_flow(hass)
-    assert result["step_id"] == "reauth_confirm"
+    assert result["type"] is FlowResultType.MENU and result["step_id"] == "reauth_confirm"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": "reauth_password"})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"email": "me@example.com", "password": "newpw"})
     assert result["type"] is FlowResultType.ABORT and result["reason"] == "reauth_successful"
@@ -238,6 +243,7 @@ def test_help_texts_are_one_short_line():
     for f in ("strings.json", "translations/en.json"):
         d = json.loads((base / f).read_text())
         texts = list(d["options"]["step"]["init"]["data_description"].values())
-        texts += [s["description"] for s in d["config"]["step"].values() if "description" in s]
+        texts += [s["description"] for k, s in d["config"]["step"].items()
+                  if "description" in s and "portal_session" not in k]  # session steps carry instructions
         for t in texts:
             assert len(t) < 60 and "\n" not in t, t

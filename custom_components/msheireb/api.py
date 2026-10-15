@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import json
 import logging
 import time
 from typing import Any
@@ -14,6 +15,66 @@ from .const import API_BASE, DEFAULT_TOKEN_LIFETIME, TOKEN_REFRESH_MARGIN, WEB_O
 
 _LOGGER = logging.getLogger(__name__)
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
+
+
+def parse_refresh_token(text: str | None) -> str | None:
+    """Extract a refresh token from a raw token or a pasted localStorage value.
+
+    Accepts the raw token, the zustand JSON ``{"state": {"refreshToken": ...}, "version": 0}``
+    (also ``refresh_token`` keys, at top level or under ``state``), with stray whitespace/quotes.
+    """
+    if not isinstance(text, str):
+        return None
+    value = text.strip().strip("'\"").strip()
+    if not value:
+        return None
+    if value[0] in "{[\"":
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, str):  # double-encoded string
+            return parse_refresh_token(parsed) if parsed != value else None
+        if isinstance(parsed, dict):
+            for scope in (parsed, parsed.get("state")):
+                if isinstance(scope, dict):
+                    for key in ("refreshToken", "refresh_token"):
+                        token = scope.get(key)
+                        if isinstance(token, str) and token.strip():
+                            return token.strip().strip("'\"").strip() or None
+            return None
+        if parsed is None:
+            return None
+    if any(ch.isspace() for ch in value) or value[0] in "{[":
+        return None
+    return value
+
+
+def parse_contracts(text: str | None) -> list[dict[str, Any]]:
+    """Extract the contract list from a pasted ``msheireb-auth`` localStorage value.
+
+    Looks at ``state.contracts`` (zustand persist) and top-level ``contracts``.
+    Returns an empty list when the text is not JSON or holds no contracts.
+    """
+    if not isinstance(text, str):
+        return []
+    value = text.strip().strip("'\"").strip()
+    if not value or value[0] not in "{[\"":
+        return []
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, str):  # double-encoded string
+            parsed = json.loads(parsed)
+    except ValueError:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    for scope in (parsed.get("state"), parsed):
+        if isinstance(scope, dict) and isinstance(scope.get("contracts"), list):
+            contracts = [c for c in scope["contracts"] if isinstance(c, dict)]
+            if contracts:
+                return contracts
+    return []
 
 
 class MsheirebError(Exception):
@@ -122,6 +183,9 @@ class MsheirebApi:
 
     async def async_login(self) -> dict[str, Any]:
         """Full login with email/password."""
+        if not self._password:
+            # Portal-session entries have no password: never attempt a login, ask for reauth.
+            raise MsheirebAuthError("no stored password (portal session); sign in again")
         status, data = await self._raw(
             "POST",
             "/user/login",
@@ -154,6 +218,28 @@ class MsheirebApi:
             raise MsheirebConnectionError(f"refresh failed ({status})")
         _LOGGER.debug("Token refresh rejected (%s), will re-login", status)
         return False
+
+    async def async_sign_in_with_refresh_token(
+        self, refresh_token: str, contracts: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any]:
+        """Validate a portal-session refresh token and load the contracts.
+
+        The refresh response carries no contracts. Use the ones from the pasted portal session
+        (login response persisted by the web app); otherwise try GET /user/contracts, best effort.
+        """
+        self.refresh_token = refresh_token
+        if not await self.async_refresh():
+            raise MsheirebAuthError("refresh token rejected")
+        if contracts:
+            self.contracts = [c for c in contracts if isinstance(c, dict)]
+        if not self.contracts:
+            status, data = await self._raw("GET", "/user/contracts")
+            payload = (data or {}).get("data") if isinstance(data, dict) else None
+            if isinstance(payload, dict):
+                payload = payload.get("contracts") or payload.get("data")
+            if status == 200 and isinstance(payload, list):
+                self.contracts = [c for c in payload if isinstance(c, dict)]
+        return {"user": self.user, "contracts": self.contracts}
 
     def _set_auth_status(self, status: str) -> None:
         if status != self.auth_status:

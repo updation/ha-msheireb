@@ -1,6 +1,6 @@
 # Msheireb Smart Home for Home Assistant (v0.3.0)
 
-[![hacs](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration) [Releases](https://github.com/sample-of-one/ha-msheireb/releases) · [Issues](https://github.com/sample-of-one/ha-msheireb/issues)
+[![hacs](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration) [Releases](https://github.com/updation/ha-msheireb/releases) · [Issues](https://github.com/updation/ha-msheireb/issues)
 
 Unofficial custom integration for the in-apartment AC (fan coil units) at **Msheireb Downtown Doha**. It works through the resident portal (`web-prod.mp-mdd.com`), using the same cloud API the portal uses (`mob-prod.mp-mdd.com:8443/api`).
 
@@ -90,16 +90,29 @@ The portal's controller accepts **pulse** commands. Each *Temp Up/Down* pulse mo
 ## Installation
 
 ### Option A: HACS (custom repository)
-1. In Home Assistant: **HACS → ⋮ → Custom repositories**. Add `https://github.com/sample-of-one/ha-msheireb` with category **Integration**.
+1. In Home Assistant: **HACS → ⋮ → Custom repositories**. Add `https://github.com/updation/ha-msheireb` with category **Integration**.
 2. Search for **Msheireb Smart Home** in HACS, then **Download**.
 3. Restart Home Assistant.
 
 ### Option B: manual copy (Samba share or File editor / Studio Code Server add-on)
-1. Download the source zip from the [latest release](https://github.com/sample-of-one/ha-msheireb/releases/latest) and copy `custom_components/msheireb/` to `/config/custom_components/msheireb/` on your HA Green. The final path must be `/config/custom_components/msheireb/manifest.json`.
+1. Download the source zip from the [latest release](https://github.com/updation/ha-msheireb/releases/latest) and copy `custom_components/msheireb/` to `/config/custom_components/msheireb/` on your HA Green. The final path must be `/config/custom_components/msheireb/manifest.json`.
 2. Restart Home Assistant.
 
 ### Configure
 **Settings → Devices & services → Add integration → Msheireb Smart Home**. Enter your portal email and password once. Tokens are stored in the config entry and refreshed automatically (24 h access token, rotating 7-day refresh token). If the refresh token expires, the integration logs in again with the stored credentials. If the password changes, Home Assistant prompts you to re-authenticate.
+
+### Sign in with portal session
+
+If the portal asks for a captcha (Turnstile) on password login, choose **Sign in with portal session** in the setup or re-authentication menu. You paste the refresh token of a browser session instead of the password; no password is stored, and the token is refreshed automatically afterwards. If it expires, Home Assistant asks you to re-authenticate.
+
+**Desktop browser (recommended):**
+1. Sign in at <https://web-prod.mp-mdd.com>.
+2. Open DevTools (F12) → **Application** (Chrome/Edge) or **Storage** (Firefox) → **Local Storage** → `https://web-prod.mp-mdd.com` → key `msheireb-auth`.
+3. Copy the **whole value** of `msheireb-auth` (`{"state":{"refreshToken":...,"contracts":[...]},...}`) and paste it. The integration takes the refresh token and your contracts from it and stores them, so restarts need no login. The portal has no separate contracts request, so pasting only the token may fail with a "no contracts" error.
+
+**Phone:** Android Chrome and iPhone Safari give no access to localStorage. Use a desktop browser, or a bookmarklet: on the signed-in portal page run one that shows `localStorage.getItem('msheireb-auth')` (e.g. `javascript:prompt('Copy:',localStorage.getItem('msheireb-auth'))`), then copy the text and paste it in Home Assistant. Some mobile browsers block `javascript:` URLs typed in the address bar; save it as a bookmark and open the bookmark instead.
+
+The refresh token is like a password: anyone with it can access your account. Do not share it. Signing out of the portal in that browser may invalidate it, so close the tab instead.
 
 **Options** (Configure button; all numeric options are number boxes with units):
 
