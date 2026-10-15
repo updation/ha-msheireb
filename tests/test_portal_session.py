@@ -1,4 +1,4 @@
-"""v0.3.22: sign in with a portal session (refresh token), no password."""
+"""v0.3.22/23: sign in with a portal session (refresh token), no password."""
 from unittest.mock import patch
 
 import pytest
@@ -76,7 +76,9 @@ async def test_config_flow_via_session(hass):
 async def test_session_flow_errors(hass):
     result = await _start(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"refresh_token": "a b"})
-    assert result["errors"] == {"base": "invalid_token"}
+    assert result["errors"] == {"base": "unrecognised_session"}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"refresh_token": " \n "})
+    assert result["errors"] == {"base": "empty_session"}
     FakeApi.fail_refresh = MsheirebAuthError("rejected")
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"refresh_token": "tok"})
     assert result["errors"] == {"base": "invalid_session"}
@@ -114,7 +116,13 @@ async def test_password_failure_hints(hass, message, err, reauth):
         result = await _start(hass, "password")
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"email": "me@example.com", "password": "x"})
-    assert result["errors"] == {"base": err}
+    if reauth and err in ("captcha_required", "invalid_auth"):
+        # the menu is shown again so the session option is one tap away
+        assert result["type"] is FlowResultType.MENU and result["step_id"] == "reauth_confirm"
+        assert "reauth_portal_session" in result["menu_options"]
+        assert "portal session" in result["description_placeholders"]["note"]
+    else:
+        assert result["errors"] == {"base": err}
 
 
 async def test_empty_password_never_logs_in(hass):
@@ -190,3 +198,98 @@ async def test_api_sign_in_falls_back_to_contracts_endpoint():
     })
     await api.async_sign_in_with_refresh_token("R")
     assert not api.contracts
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("\u201cabc.def.ghi\u201d", "abc.def.ghi"),
+    ("\u2018tok\u2019 ", "tok"),
+    ('"{\\"state\\":{\\"refreshToken\\":\\"DE\\"}}"', "DE"),  # double-encoded JSON string
+    ('"raw-token-value"', "raw-token-value"),
+    ('Copy this: {"state":{"refreshToken":"SURR","contracts":[{"id":1}]},"version":0} thanks', "SURR"),
+    ('x {"a":"}{"} {"refreshToken":"BAL"} y', "BAL"),
+    ('here it is: eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM ok', "eyJhbGciOi.eyJzdWIiOi.SflKxwRJSM"),
+    ("token is aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa now", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+    ('{"state":{"accessToken":"eyJa.bbbb.cccc"}}', None),
+    ("please help me", None),
+    ("\u201c  \u201d", None),
+])
+def test_parse_refresh_token_variants(text, expected):
+    assert parse_refresh_token(text) == expected
+
+
+def test_parse_contracts_variants():
+    obj = '{"state":{"refreshToken":"T","contracts":[{"id":5}]},"version":0}'
+    import json as _json
+    assert parse_contracts("\u201c" + obj + "\u201d") == [{"id": 5}]
+    assert parse_contracts(_json.dumps(obj)) == [{"id": 5}]
+    assert parse_contracts("Copy this: " + obj + " bye") == [{"id": 5}]
+    assert parse_contracts("eyJa.bbbb.cccc") == []
+
+
+def test_bookmarklet_in_strings_and_valid_js(tmp_path):
+    import json, pathlib, shutil, subprocess
+    from custom_components.msheireb.const import BOOKMARKLET
+    assert BOOKMARKLET.startswith("javascript:(()=>{const v=localStorage.getItem('msheireb-auth');")
+    base = pathlib.Path(__file__).parent.parent / "custom_components" / "msheireb"
+    for f in ("strings.json", "translations/en.json"):
+        steps = json.loads((base / f).read_text())["config"]["step"]
+        for k in ("portal_session", "reauth_portal_session"):
+            d = steps[k]["description"]
+            assert "```\n{bookmarklet}\n```" in d and "tap and hold to copy" in d
+            assert "[web-prod.mp-mdd.com](https://web-prod.mp-mdd.com)" in d
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    js = tmp_path / "bookmarklet.js"
+    js.write_text(BOOKMARKLET.removeprefix("javascript:"))
+    subprocess.run([node, "--check", str(js)], check=True)
+
+
+async def test_session_steps_get_bookmarklet_placeholder(hass):
+    from custom_components.msheireb.const import BOOKMARKLET
+    result = await _start(hass)
+    assert result["description_placeholders"] == {"bookmarklet": BOOKMARKLET}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"refresh_token": "a b"})
+    assert result["description_placeholders"] == {"bookmarklet": BOOKMARKLET}
+    entry = MockConfigEntry(domain=DOMAIN, data={**ENTRY_DATA, "password": ""}, unique_id="1263")
+    entry.add_to_hass(hass)
+    result = await entry.start_reauth_flow(hass)
+    assert result["description_placeholders"]["bookmarklet"] == BOOKMARKLET
+
+
+async def test_session_errors_say_distinct_keys(hass):
+    result = await _start(hass)
+    FakeApi.no_contracts = True
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"refresh_token": "tok"})
+    assert result["errors"] == {"base": "no_contracts"}
+    import json, pathlib
+    base = pathlib.Path(__file__).parent.parent / "custom_components" / "msheireb"
+    errs = json.loads((base / "strings.json").read_text())["config"]["error"]
+    for k in ("empty_session", "unrecognised_session", "invalid_session", "no_contracts"):
+        assert errs[k]
+    assert "invalid_token" not in errs
+
+
+async def test_reauth_for_session_entry_opens_session_step(hass):
+    entry = MockConfigEntry(domain=DOMAIN, data={**ENTRY_DATA, "password": ""}, unique_id="1263")
+    entry.add_to_hass(hass)
+    result = await entry.start_reauth_flow(hass)
+    assert result["type"] is FlowResultType.FORM and result["step_id"] == "reauth_portal_session"
+
+
+async def test_session_entry_refresh_failure_starts_session_reauth(hass):
+    from custom_components.msheireb.api import MsheirebApi as RealApi
+    entry = MockConfigEntry(domain=DOMAIN, data={**ENTRY_DATA, "password": "", "contracts": [{"id": 4242}]},
+                            unique_id="1263")
+    entry.add_to_hass(hass)
+
+    class Expired(RealApi):
+        async def _raw(self, method, path, *a, **kw):
+            return 401, {"message": "invalid refresh token"}
+
+    with patch("custom_components.msheireb.MsheirebApi", Expired):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.state is config_entries.ConfigEntryState.SETUP_ERROR
+    flows = [f for f in hass.config_entries.flow.async_progress() if f["context"]["source"] == "reauth"]
+    assert flows and flows[0]["step_id"] == "reauth_portal_session"

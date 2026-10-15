@@ -105,12 +105,24 @@ The portal's controller accepts **pulse** commands. Each *Temp Up/Down* pulse mo
 
 If the portal asks for a captcha (Turnstile) on password login, choose **Sign in with portal session** in the setup or re-authentication menu. You paste the refresh token of a browser session instead of the password; no password is stored, and the token is refreshed automatically afterwards. If it expires, Home Assistant asks you to re-authenticate.
 
-**Desktop browser (recommended):**
-1. Sign in at <https://web-prod.mp-mdd.com>.
-2. Open DevTools (F12) → **Application** (Chrome/Edge) or **Storage** (Firefox) → **Local Storage** → `https://web-prod.mp-mdd.com` → key `msheireb-auth`.
-3. Copy the **whole value** of `msheireb-auth` (`{"state":{"refreshToken":...,"contracts":[...]},...}`) and paste it. The integration takes the refresh token and your contracts from it and stores them, so restarts need no login. The portal has no separate contracts request, so pasting only the token may fail with a "no contracts" error.
+The setup step shows these instructions, with the bookmarklet in a code block (tap and hold to copy). You paste the whole `msheireb-auth` value; the integration takes the refresh token and your contracts from it, so restarts need no login. The portal has no separate contracts request, so pasting only the token may fail with a "no contracts" error. The paste may be the whole JSON, the same JSON wrapped in quotes, a raw token, or any of these inside other text.
 
-**Phone:** Android Chrome and iPhone Safari give no access to localStorage. Use a desktop browser, or a bookmarklet: on the signed-in portal page run one that shows `localStorage.getItem('msheireb-auth')` (e.g. `javascript:prompt('Copy:',localStorage.getItem('msheireb-auth'))`), then copy the text and paste it in Home Assistant. Some mobile browsers block `javascript:` URLs typed in the address bar; save it as a bookmark and open the bookmark instead.
+**Phone (iPhone Safari or Android Chrome), one-time setup:**
+1. Tap and hold the bookmarklet code in the setup dialog to copy it.
+2. Add any page as a bookmark (Safari: Share → Add Bookmark; Chrome: ⋮ → ☆).
+3. Edit the bookmark and replace its URL with the copied code.
+4. Open [web-prod.mp-mdd.com](https://web-prod.mp-mdd.com) and sign in.
+5. Run the bookmark. Safari: open Bookmarks and tap it. Chrome on Android: type the bookmark name in the address bar and tap the bookmark in the suggestions.
+6. When it says "Copied!", go back to Home Assistant and paste.
+
+**Computer:**
+1. Sign in at [web-prod.mp-mdd.com](https://web-prod.mp-mdd.com).
+2. Either click the bookmarklet, or open DevTools (F12) → **Application** (Chrome/Edge) or **Storage** (Firefox) → **Local Storage** → `https://web-prod.mp-mdd.com` → `msheireb-auth` and copy the whole value.
+3. Paste it into Home Assistant.
+
+If the session expires, Home Assistant starts re-authentication; for a session entry (no stored password) this opens the session step directly. If a password re-login fails, the menu is shown again with the session option.
+
+Errors: *nothing pasted*, *not recognised* (copy the whole value again), *rejected* (expired: sign in on the portal again and re-copy) and *no contracts* (copy the whole value, not just the token).
 
 The refresh token is like a password: anyone with it can access your account. Do not share it. Signing out of the portal in that browser may invalidate it, so close the tab instead.
 

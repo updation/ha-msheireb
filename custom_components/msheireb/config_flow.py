@@ -24,8 +24,16 @@ from homeassistant.helpers.selector import (
     TextSelectorType,
 )
 
-from .api import MsheirebApi, MsheirebAuthError, MsheirebError, parse_contracts, parse_refresh_token
+from .api import (
+    MsheirebApi,
+    MsheirebAuthError,
+    MsheirebError,
+    clean_paste,
+    parse_contracts,
+    parse_refresh_token,
+)
 from .const import (
+    BOOKMARKLET,
     CONF_CONTRACTS,
     slim_contracts,
     CONF_ADOPT_EXTERNAL,
@@ -130,6 +138,18 @@ class MsheirebNoContracts(MsheirebError):
     """The session is valid but no contracts could be loaded."""
 
 
+def _session_placeholders() -> dict[str, str]:
+    return {"bookmarklet": BOOKMARKLET}
+
+
+def _check_paste(pasted: str) -> tuple[str | None, str | None]:
+    """Return (refresh_token, error key) for the pasted session text."""
+    if not clean_paste(pasted):
+        return None, "empty_session"
+    token = parse_refresh_token(pasted)
+    return token, (None if token else "unrecognised_session")
+
+
 def _session_schema() -> vol.Schema:
     return vol.Schema({vol.Required(CONF_REFRESH_TOKEN): TextSelector(TextSelectorConfig(multiline=True))})
 
@@ -166,9 +186,9 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_portal_session(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            token = parse_refresh_token(user_input[CONF_REFRESH_TOKEN])
-            if not token:
-                errors["base"] = "invalid_token"
+            token, bad = _check_paste(user_input[CONF_REFRESH_TOKEN])
+            if bad:
+                errors["base"] = bad
             else:
                 try:
                     info = await _validate_session(
@@ -190,16 +210,26 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
                         title=f"Msheireb ({info['email']})" if info["email"] else "Msheireb",
                         data=info["data"],
                     )
-        return self.async_show_form(step_id="portal_session", data_schema=_session_schema(), errors=errors)
+        return self.async_show_form(
+            step_id="portal_session",
+            data_schema=_session_schema(),
+            errors=errors,
+            description_placeholders=_session_placeholders(),
+        )
 
     async def async_step_reauth(self, entry_data: Mapping[str, Any]) -> ConfigFlowResult:
+        if not entry_data.get(CONF_PASSWORD):
+            # Portal-session entry: there is no password to retry, go straight to the session step.
+            return await self.async_step_reauth_portal_session()
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
-        self, user_input: dict[str, Any] | None = None
+        self, user_input: dict[str, Any] | None = None, note: str = ""
     ) -> ConfigFlowResult:
         return self.async_show_menu(
-            step_id="reauth_confirm", menu_options=["reauth_password", "reauth_portal_session"]
+            step_id="reauth_confirm",
+            menu_options=["reauth_password", "reauth_portal_session"],
+            description_placeholders={"note": note},
         )
 
     async def async_step_reauth_password(
@@ -213,6 +243,16 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
                 info = await _validate(self.hass, email, user_input[CONF_PASSWORD])
             except MsheirebError as err:
                 errors["base"] = _login_error(err)
+                if errors["base"] in ("invalid_auth", "captcha_required"):
+                    # Show the menu again so "Sign in with portal session" is one tap away.
+                    note = (
+                        "The portal requires a captcha for password login."
+                        if errors["base"] == "captcha_required"
+                        else "The email or password was rejected."
+                    )
+                    return await self.async_step_reauth_confirm(
+                        note=f"{note} Choose **Sign in with portal session** to continue without a password."
+                    )
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Unexpected error during reauth")
                 errors["base"] = "unknown"
@@ -237,9 +277,9 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
         entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
         if user_input is not None:
-            token = parse_refresh_token(user_input[CONF_REFRESH_TOKEN])
-            if not token:
-                errors["base"] = "invalid_token"
+            token, bad = _check_paste(user_input[CONF_REFRESH_TOKEN])
+            if bad:
+                errors["base"] = bad
             else:
                 try:
                     info = await _validate_session(
@@ -261,7 +301,12 @@ class MsheirebConfigFlow(ConfigFlow, domain=DOMAIN):
                     await self.async_set_unique_id(info["unique_id"])
                     self._abort_if_unique_id_mismatch(reason="wrong_account")
                     return self.async_update_reload_and_abort(entry, data_updates=info["data"])
-        return self.async_show_form(step_id="reauth_portal_session", data_schema=_session_schema(), errors=errors)
+        return self.async_show_form(
+            step_id="reauth_portal_session",
+            data_schema=_session_schema(),
+            errors=errors,
+            description_placeholders=_session_placeholders(),
+        )
 
     @staticmethod
     @callback

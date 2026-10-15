@@ -19,14 +19,14 @@
       },
       "portal_session": {
         "title": "Sign in with portal session",
-        "description": "Sign in at https://web-prod.mp-mdd.com in a browser, then copy the whole value of the browser's localStorage key 'msheireb-auth' and paste it here. It contains the refresh token and your contracts. Pasting only the refresh token works only if the contracts can be loaded separately. Treat the token like a password.",
+        "description": "Copy your signed-in portal session and paste it below. It contains your refresh token and contracts; treat it like a password.\n\nBookmarklet (tap and hold to copy):\n\n```\n{bookmarklet}\n```\n\n**On a phone (iPhone Safari or Android Chrome), one-time setup**\n1. Tap and hold the code above to copy it.\n2. In your browser, add any page as a bookmark (iPhone Safari: Share > Add Bookmark; Android Chrome: ⋮ > ☆).\n3. Edit that bookmark: name it `Copy Msheireb session` and replace its URL with the code you copied.\n4. Open [web-prod.mp-mdd.com](https://web-prod.mp-mdd.com) and sign in.\n5. Run the bookmark. iPhone Safari: open Bookmarks and tap it. Android Chrome: type the bookmark name in the address bar and tap the bookmark in the suggestions.\n6. When it says Copied, come back here and paste into the field below.\n\n**On a computer**\n1. Open [web-prod.mp-mdd.com](https://web-prod.mp-mdd.com) and sign in.\n2. Either click the bookmarklet (add it as a bookmark as above), or open DevTools (F12) > Application > Local Storage > https://web-prod.mp-mdd.com > msheireb-auth and copy the whole value.\n3. Paste it into the field below.",
         "data": {
           "refresh_token": "Refresh token"
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate Msheireb",
-        "description": "The saved login stopped working.",
+        "description": "The saved login stopped working. {note}",
         "menu_options": {
           "reauth_password": "Email and password",
           "reauth_portal_session": "Sign in with portal session"
@@ -42,7 +42,7 @@
       },
       "reauth_portal_session": {
         "title": "Re-authenticate with portal session",
-        "description": "Sign in at https://web-prod.mp-mdd.com in a browser, then copy the whole value of the browser's localStorage key 'msheireb-auth' and paste it here. It contains the refresh token and your contracts. Pasting only the refresh token works only if the contracts can be loaded separately. Treat the token like a password.",
+        "description": "The saved login stopped working. Copy your signed-in portal session and paste it below. It contains your refresh token and contracts; treat it like a password.\n\nBookmarklet (tap and hold to copy):\n\n```\n{bookmarklet}\n```\n\n**On a phone (iPhone Safari or Android Chrome), one-time setup**\n1. Tap and hold the code above to copy it.\n2. In your browser, add any page as a bookmark (iPhone Safari: Share > Add Bookmark; Android Chrome: ⋮ > ☆).\n3. Edit that bookmark: name it `Copy Msheireb session` and replace its URL with the code you copied.\n4. Open [web-prod.mp-mdd.com](https://web-prod.mp-mdd.com) and sign in.\n5. Run the bookmark. iPhone Safari: open Bookmarks and tap it. Android Chrome: type the bookmark name in the address bar and tap the bookmark in the suggestions.\n6. When it says Copied, come back here and paste into the field below.\n\n**On a computer**\n1. Open [web-prod.mp-mdd.com](https://web-prod.mp-mdd.com) and sign in.\n2. Either click the bookmarklet (add it as a bookmark as above), or open DevTools (F12) > Application > Local Storage > https://web-prod.mp-mdd.com > msheireb-auth and copy the whole value.\n3. Paste it into the field below.",
         "data": {
           "refresh_token": "Refresh token"
         }
@@ -53,9 +53,10 @@
       "cannot_connect": "Could not reach the Msheireb portal.",
       "unknown": "Unexpected error.",
       "captcha_required": "The portal requires a captcha for password login. Go back and use the 'Sign in with portal session' option.",
-      "invalid_token": "No refresh token found in the pasted text.",
-      "invalid_session": "The portal rejected this refresh token. Sign in at the portal again and copy a fresh one.",
-      "no_contracts": "The session is valid but no contracts were found. Paste the whole msheireb-auth value from localStorage instead of only the token."
+      "invalid_session": "The portal rejected this session (expired or invalid). Sign in on the portal again, re-copy the msheireb-auth value and paste it.",
+      "no_contracts": "The session is valid but no contracts were found. Copy the whole msheireb-auth value, not just the token.",
+      "empty_session": "Nothing was pasted. Copy the msheireb-auth value (see the steps above) and paste it in the field.",
+      "unrecognised_session": "That does not look like a portal session. Copy the whole msheireb-auth value again, using the bookmarklet or DevTools, and paste it."
     },
     "abort": {
       "already_configured": "This account is already configured.",

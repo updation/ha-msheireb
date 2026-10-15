@@ -124,3 +124,11 @@ STORE_VERSION = 1
 # Max cooling override: the integration cycles room power around the target with hysteresis
 OVERRIDE_HYSTERESIS = 0.5  # °C: off below target - 0.5, on at target + 0.5 or more
 OVERRIDE_MIN_TOGGLE_INTERVAL = 180.0  # s: minimum time between override power toggles per room
+
+# Bookmarklet shown in the portal-session steps: copies the portal's localStorage 'msheireb-auth' value
+BOOKMARKLET = (
+    "javascript:(()=>{const v=localStorage.getItem('msheireb-auth');if(!v){alert('Not signed in to the "
+    "Msheireb portal on this page. Open web-prod.mp-mdd.com, sign in, then tap this bookmark again.');"
+    "return;}if(navigator.clipboard){navigator.clipboard.writeText(v).then(()=>alert('Copied! Now paste "
+    "it in Home Assistant.'),()=>prompt('Copy this:',v));}else{prompt('Copy this:',v);}})()"
+)

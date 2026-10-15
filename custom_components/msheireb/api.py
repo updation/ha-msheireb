@@ -5,6 +5,7 @@ import asyncio
 from collections.abc import Callable
 import json
 import logging
+import re
 import time
 from typing import Any
 from urllib.parse import quote
@@ -17,63 +18,97 @@ _LOGGER = logging.getLogger(__name__)
 _TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
-def parse_refresh_token(text: str | None) -> str | None:
-    """Extract a refresh token from a raw token or a pasted localStorage value.
+_QUOTES = "'\"`\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u201f\u00ab\u00bb"
+_JWT_RE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+_LONG_WORD_RE = re.compile(r"[A-Za-z0-9_\-.~+/=]{20,}")
 
-    Accepts the raw token, the zustand JSON ``{"state": {"refreshToken": ...}, "version": 0}``
-    (also ``refresh_token`` keys, at top level or under ``state``), with stray whitespace/quotes.
-    """
+
+def clean_paste(text: str | None) -> str:
+    """Trim whitespace and stray (straight or smart) quotes around a pasted value."""
     if not isinstance(text, str):
-        return None
-    value = text.strip().strip("'\"").strip()
+        return ""
+    return text.strip().strip(_QUOTES + " \t\r\n\u200b\ufeff").strip()
+
+
+def _json_objects(text: str, depth: int = 0) -> list[dict[str, Any]]:
+    """JSON objects in the paste: the whole value (also double-encoded), else each balanced one in the text."""
+    raw = text.strip().strip("\u200b\ufeff").strip()
+    value = clean_paste(text)
+    if not value or depth > 3:
+        return []
+    parsed = None
+    for candidate in (raw, value):  # raw first: surrounding quotes may be a JSON string wrapper
+        try:
+            parsed = json.loads(candidate)
+            break
+        except ValueError:
+            continue
+    if isinstance(parsed, dict):
+        return [parsed]
+    if isinstance(parsed, str):  # JSON string wrapping the value (double-encoded)
+        return _json_objects(parsed, depth + 1)
+    found: list[dict[str, Any]] = []
+    decoder = json.JSONDecoder()
+    pos = value.find("{")
+    while pos != -1:
+        try:
+            obj, end = decoder.raw_decode(value, pos)
+        except ValueError:
+            pos = value.find("{", pos + 1)
+            continue
+        if isinstance(obj, dict):
+            found.append(obj)
+        pos = value.find("{", end)
+    return found
+
+
+def _token_from_object(obj: dict[str, Any]) -> str | None:
+    for scope in (obj, obj.get("state")):
+        if isinstance(scope, dict):
+            for key in ("refreshToken", "refresh_token"):
+                token = scope.get(key)
+                if isinstance(token, str) and clean_paste(token):
+                    return clean_paste(token)
+    return None
+
+
+def parse_refresh_token(text: str | None) -> str | None:
+    """Extract a refresh token from whatever the user pasted.
+
+    Accepts the whole ``msheireb-auth`` JSON (``{"state": {"refreshToken": ...}}``, also
+    ``refresh_token`` keys), that JSON wrapped in quotes, a raw token, or either surrounded by
+    other text (first balanced JSON object, else a JWT-like token, else a long token-like word).
+    """
+    value = clean_paste(text)
     if not value:
         return None
-    if value[0] in "{[\"":
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            parsed = None
-        if isinstance(parsed, str):  # double-encoded string
-            return parse_refresh_token(parsed) if parsed != value else None
-        if isinstance(parsed, dict):
-            for scope in (parsed, parsed.get("state")):
-                if isinstance(scope, dict):
-                    for key in ("refreshToken", "refresh_token"):
-                        token = scope.get(key)
-                        if isinstance(token, str) and token.strip():
-                            return token.strip().strip("'\"").strip() or None
-            return None
-        if parsed is None:
-            return None
-    if any(ch.isspace() for ch in value) or value[0] in "{[":
+    objects = _json_objects(text)
+    if objects:
+        for obj in objects:
+            token = _token_from_object(obj)
+            if token:
+                return token
+        return None  # JSON without a refresh token: do not mistake e.g. the access token for one
+    if value[0] in "{[":
         return None
-    return value
+    if not any(ch.isspace() for ch in value):
+        return value
+    match = _JWT_RE.search(value) or _LONG_WORD_RE.search(value)
+    return clean_paste(match.group(0)) if match else None
 
 
 def parse_contracts(text: str | None) -> list[dict[str, Any]]:
     """Extract the contract list from a pasted ``msheireb-auth`` localStorage value.
 
     Looks at ``state.contracts`` (zustand persist) and top-level ``contracts``.
-    Returns an empty list when the text is not JSON or holds no contracts.
+    Returns an empty list when the text holds no JSON object or no contracts.
     """
-    if not isinstance(text, str):
-        return []
-    value = text.strip().strip("'\"").strip()
-    if not value or value[0] not in "{[\"":
-        return []
-    try:
-        parsed = json.loads(value)
-        if isinstance(parsed, str):  # double-encoded string
-            parsed = json.loads(parsed)
-    except ValueError:
-        return []
-    if not isinstance(parsed, dict):
-        return []
-    for scope in (parsed.get("state"), parsed):
-        if isinstance(scope, dict) and isinstance(scope.get("contracts"), list):
-            contracts = [c for c in scope["contracts"] if isinstance(c, dict)]
-            if contracts:
-                return contracts
+    for obj in _json_objects(text or ""):
+        for scope in (obj.get("state"), obj):
+            if isinstance(scope, dict) and isinstance(scope.get("contracts"), list):
+                contracts = [c for c in scope["contracts"] if isinstance(c, dict)]
+                if contracts:
+                    return contracts
     return []
 
 
