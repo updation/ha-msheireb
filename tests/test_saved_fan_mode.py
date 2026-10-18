@@ -64,3 +64,50 @@ async def test_off_right_after_choosing_speed_remembers_the_choice(hass):
     await _svc(hass, "turn_off")  # no poll in between: the stored reading still says high
     assert coord.drift.prev_fan[KEY] == "medium"
     assert _saved(hass) == "medium"
+
+
+def _last(hass):
+    return hass.states.get(DINING).attributes.get("last_fan_mode")
+
+
+async def test_last_fan_mode_tracks_choices_including_off(hass):
+    entry, coord, api = await _setup(hass)
+    assert _last(hass) is None
+    await _svc(hass, "set_fan_mode", fan_mode="medium")
+    await _poll(hass, coord)
+    assert _last(hass) == "medium" and _saved(hass) == "medium"
+    await _svc(hass, "set_fan_mode", fan_mode="off")
+    await _poll(hass, coord)
+    assert _last(hass) == "off" and _saved(hass) == "medium"
+    await _svc(hass, "set_fan_mode", fan_mode="low")  # while off: turns on at low
+    await _poll(hass, coord)
+    assert _last(hass) == "low" and _saved(hass) == "low"
+    await _svc(hass, "turn_off")
+    await _poll(hass, coord)
+    assert _last(hass) == "off" and _saved(hass) == "low"
+    await _svc(hass, "set_fan_mode", fan_mode="auto")
+    await _poll(hass, coord)
+    assert _last(hass) == "auto"
+
+
+async def test_last_fan_mode_ignores_invalid_mode(hass):
+    import pytest
+    from homeassistant.exceptions import HomeAssistantError
+    from homeassistant.exceptions import ServiceValidationError
+    entry, coord, api = await _setup(hass)
+    await _svc(hass, "set_fan_mode", fan_mode="high")
+    with pytest.raises((HomeAssistantError, ServiceValidationError)):
+        await _svc(hass, "set_fan_mode", fan_mode="turbo")
+    assert coord.drift.last_fan[KEY] == "high"
+
+
+async def test_last_fan_mode_persists_across_restart(hass, hass_storage):
+    entry, coord, api = await _setup(hass)
+    await _svc(hass, "set_fan_mode", fan_mode="medium")
+    await _svc(hass, "set_fan_mode", fan_mode="off")
+    await _poll(hass, coord)
+    await coord.drift.store.async_save(coord.drift._data_to_save())
+    assert hass_storage[store_key("e1")]["data"]["last_fan"] == {KEY: "off"}
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert _last(hass) == "off" and _saved(hass) == "medium"

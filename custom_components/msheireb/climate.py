@@ -201,6 +201,7 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
             "offset": self.coordinator.offset(self._zone_key),
             "device_setpoint": zone.setpoint,
             "saved_fan_mode": self._saved_fan_mode(),
+            "last_fan_mode": self.coordinator.drift.last_fan.get(self._zone_key),
         }
 
     def _saved_fan_mode(self) -> str | None:
@@ -304,6 +305,7 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
             if target is not None:
                 self._intent[KIND_TARGET] = float(target)
         if not want_on:
+            drift.set_last_fan(zone.key, FAN_OFF)
             memory = drift.prev_fan.get(zone.key)
             remembered = current_fan or drift.desired.get(zone.key, {}).get(KIND_FAN)
             pending_fan = self._intent.get(KIND_FAN)
@@ -360,6 +362,7 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         if fan_mode not in self._fan_roles:
             raise HomeAssistantError(f"Unsupported fan mode {fan_mode}")
         zone = self._require_zone()
+        self.coordinator.drift.set_last_fan(zone.key, fan_mode)
         if self._fan_off and self._power(zone) is False:
             # a speed chosen while off: turn on, then (after the power -> fan delay) that speed;
             # it replaces the remembered speed

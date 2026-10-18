@@ -83,6 +83,7 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
             "desired": coordinator.drift.desired,
             "auto_restore": coordinator.drift.auto_restore,
             "remembered_fan": coordinator.drift.prev_fan,
+            "last_fan_mode": coordinator.drift.last_fan,
             "target_offsets": coordinator.drift.offsets,
             "offset_pending": sorted(coordinator.drift.offset_pending),
             "max_cooling_override": coordinator.drift.override,

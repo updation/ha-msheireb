@@ -111,6 +111,8 @@ class DriftManager:
     last_event: DriftEvent | None = None
     restoring: set[str] = field(default_factory=set)
     prev_fan: dict[str, str] = field(default_factory=dict)  # zone_key -> fan speed before HA turned it off
+    # zone_key -> exact last fan mode chosen from HA (set_fan_mode / turn off), incl. 'off'
+    last_fan: dict[str, str] = field(default_factory=dict)
     # zone_key -> target offset (°C): the AC is driven to (shown target + offset)
     offsets: dict[str, float] = field(default_factory=dict)
     # rooms whose offset changed while off: the new offset is applied on the next turn-on from HA
@@ -129,6 +131,7 @@ class DriftManager:
         self.desired = {k: dict(v) for k, v in (data.get("desired") or {}).items()}
         self.auto_restore = {k: bool(v) for k, v in (data.get("auto_restore") or {}).items()}
         self.prev_fan = {k: str(v) for k, v in (data.get("prev_fan") or {}).items() if v and v != FAN_OFF}
+        self.last_fan = {k: str(v) for k, v in (data.get("last_fan") or {}).items() if v}
         for want in self.desired.values():
             if want.get("fan") == FAN_OFF:
                 want.pop("fan")  # 'off' is a power state, never a desired fan speed
@@ -145,6 +148,7 @@ class DriftManager:
 
     def _data_to_save(self) -> dict[str, Any]:
         return {"desired": self.desired, "auto_restore": self.auto_restore, "prev_fan": self.prev_fan,
+                "last_fan": self.last_fan,
                 "offsets": self.offsets, "offset_pending": sorted(self.offset_pending),
                 "override": self.override, "override_paused": sorted(self.override_paused)}
 
@@ -217,6 +221,13 @@ class DriftManager:
         else:
             self.prev_fan.pop(zone_key, None)
         self._save()
+
+    @callback
+    def set_last_fan(self, zone_key: str, mode: str) -> None:
+        """Record the exact fan mode last chosen from HA ('off' when the room was turned off)."""
+        if self.last_fan.get(zone_key) != mode:
+            self.last_fan[zone_key] = mode
+            self._save()
 
     @callback
     def pop_remembered_fan(self, zone_key: str) -> str | None:
