@@ -200,7 +200,16 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
             "control_sn": {role: c.sn for role, c in zone.controls.items()},
             "offset": self.coordinator.offset(self._zone_key),
             "device_setpoint": zone.setpoint,
+            "saved_fan_mode": self._saved_fan_mode(),
         }
+
+    def _saved_fan_mode(self) -> str | None:
+        """The remembered speed re-applied on the next turn-on (never 'off'; None if unknown)."""
+        drift = self.coordinator.drift
+        for fan in (drift.prev_fan.get(self._zone_key), drift.desired.get(self._zone_key, {}).get(KIND_FAN)):
+            if fan and fan != FAN_OFF and fan in self._fan_roles:
+                return fan
+        return None
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -297,6 +306,9 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         if not want_on:
             memory = drift.prev_fan.get(zone.key)
             remembered = current_fan or drift.desired.get(zone.key, {}).get(KIND_FAN)
+            pending_fan = self._intent.get(KIND_FAN)
+            if pending_fan in self._fan_roles and self.coordinator.room_busy(zone.key):
+                remembered = pending_fan  # a speed just chosen from HA beats a reading taken before it applied
             # Only remember a real speed taken while on; never replace a remembered speed with
             # Auto (Auto may come from our own off-sequence, a drift restore or an AC restart).
             if remembered and (memory is None or (zone.power is not False and remembered != ROLE_FAN_AUTO)):
