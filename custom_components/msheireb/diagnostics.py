@@ -75,8 +75,6 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: ConfigE
         "commands_confirmed": h.commands_confirmed,
         "commands_failed": h.commands_failed,
         "last_commands": {k: {**r.as_attributes(), "result": r.result} for k, r in h.commands.items()},
-        "command_history": {k: [{**r.as_attributes(), "result": r.result} for r in v]
-                            for k, v in h.history.items()},
         "active_notifications": sorted(coordinator.alerts.active),
         "drift": {
             "mode": coordinator.drift.mode,
