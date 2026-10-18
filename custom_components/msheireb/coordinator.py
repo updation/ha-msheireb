@@ -178,6 +178,7 @@ class Health:
     command_retries: int = 0
     controller_down_since: dict[int, float] = field(default_factory=dict)  # monotonic
     commands: dict[str, CommandRecord] = field(default_factory=dict)  # zone_key -> last
+    history: dict[str, list[CommandRecord]] = field(default_factory=dict)  # zone_key -> last 10
 
 
 class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
@@ -459,6 +460,9 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
         )
         rec.first_monotonic = rec.sent_monotonic
         self.health.commands[zone.key] = rec
+        hist = self.health.history.setdefault(zone.key, [])
+        hist.append(rec)
+        del hist[:-10]
         if error is not None:
             rec.result = CMD_FAILED
             rec.error = error
