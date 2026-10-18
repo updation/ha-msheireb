@@ -182,6 +182,11 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         zone = self.zone
         if self._fan_off and self._power(zone) is False:
             return FAN_OFF
+        if KIND_FAN not in self._intent and self.coordinator.drift.is_paused(self._zone_key) and zone:
+            # idle phase of the max cooling override (fan at Auto): show the speed it resumes with
+            resume = self.coordinator.drift._resume_fan(zone)
+            if resume in self._fan_roles:
+                return resume
         return self._opt("fan", zone.fan_mode(self._fan_roles) if zone else None)
 
     @property
@@ -363,6 +368,13 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
             raise HomeAssistantError(f"Unsupported fan mode {fan_mode}")
         zone = self._require_zone()
         self.coordinator.drift.set_last_fan(zone.key, fan_mode)
+        if self.coordinator.drift.is_paused(zone.key) and KIND_POWER not in self._intent:
+            # idle phase of the max cooling override: nothing pressed now (the unit is off with the
+            # fan at Auto); the speed is stored and applied when the override powers the room on
+            self.coordinator.drift.remember_fan(zone.key, fan_mode)
+            self.coordinator.async_set_desired(zone.key, {KIND_FAN: fan_mode})
+            self.async_write_ha_state()
+            return
         if self._fan_off and self._power(zone) is False:
             # a speed chosen while off: turn on, then (after the power -> fan delay) that speed;
             # it replaces the remembered speed

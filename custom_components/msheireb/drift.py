@@ -31,6 +31,7 @@ from .const import (
     OFFSET_STEP,
     OVERRIDE_HYSTERESIS,
     OVERRIDE_MIN_TOGGLE_INTERVAL,
+    ROLE_FAN_AUTO,
     STORE_VERSION,
 )
 
@@ -396,11 +397,18 @@ class DriftManager:
                     self._start_override_command(zone, expected, "max cooling override: power on", True)
                 else:
                     fan = zone.fan_mode(FAN_ROLES)
-                    if fan and fan != FAN_OFF:
+                    # remember the running speed only if no speed is known yet: the user's choice
+                    # (remembered / desired) is never replaced by a reading, and never by Auto
+                    if fan in FAN_ROLES and fan != ROLE_FAN_AUTO and self._resume_fan(zone) is None:
                         self.remember_fan(key, fan)
                     self.override_paused.add(key)
                     self._save()
-                    self._start_override_command(zone, {"power": False}, "max cooling override: power off")
+                    expected = {"power": False}
+                    if ROLE_FAN_AUTO in zone.controls:
+                        # power off alone leaves the fan coil blowing at the selected speed: also
+                        # set the fan to Auto (like the normal off sequence), whatever the option says
+                        expected["fan"] = ROLE_FAN_AUTO
+                    self._start_override_command(zone, expected, "max cooling override: power off")
 
     @callback
     def mark_handled(self, zone_key: str) -> None:
