@@ -3,15 +3,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import logging
+import math
 import time
 from typing import TYPE_CHECKING, Any
 
+from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_ADOPT_EXTERNAL,
+    CONF_OVERRIDE_SENSORS,
     CONF_DRIFT_GRACE,
     CONF_EXTERNAL_CHANGE,
     DEFAULT_ADOPT_EXTERNAL,
@@ -122,6 +125,8 @@ class DriftManager:
     override: dict[str, bool] = field(default_factory=dict)
     override_paused: set[str] = field(default_factory=set)
     override_last_toggle: dict[str, float] = field(default_factory=dict)
+    # rooms whose configured external sensor is currently unusable (AC reading used): warn once
+    sensor_fallback: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.store = Store(self.hass, STORE_VERSION, store_key(self.coordinator.config_entry.entry_id))
@@ -339,6 +344,45 @@ class DriftManager:
             self.restoring.discard(zone.key)
         self.coordinator.schedule_refresh_after_command()
 
+    def room_sensor(self, zone_key: str) -> str | None:
+        """External temperature sensor configured for this room's override (None = the AC's own)."""
+        sensors = self._opts.get(CONF_OVERRIDE_SENSORS) or {}
+        return (sensors.get(zone_key) or None) if isinstance(sensors, dict) else None
+
+    def override_reference(self, zone: HvacZone) -> tuple[str, float | None]:
+        """(source, °C) used for the override hysteresis: the sensor's entity id, or 'ac' (the AC's
+        reading) when none is configured or the sensor is unavailable / not numeric."""
+        entity_id = self.room_sensor(zone.key)
+        if not entity_id:
+            self.sensor_fallback.discard(zone.key)
+            return "ac", zone.room_temperature
+        state = self.hass.states.get(entity_id)
+        value: float | None = None
+        if state is not None:
+            try:
+                value = float(state.state)
+            except (TypeError, ValueError):
+                value = None
+            if value is not None and not math.isfinite(value):
+                value = None
+            unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+            if value is not None and unit == "°F":
+                value = (value - 32.0) * 5.0 / 9.0
+            elif value is not None and unit == "K":
+                value -= 273.15
+        if value is None:
+            if zone.key not in self.sensor_fallback:
+                self.sensor_fallback.add(zone.key)
+                _LOGGER.warning(
+                    "Max cooling override for %s: temperature sensor %s is unavailable or not numeric; "
+                    "using the AC's own reading", zone.room_name, entity_id)
+            return "ac", zone.room_temperature
+        if zone.key in self.sensor_fallback:
+            self.sensor_fallback.discard(zone.key)
+            _LOGGER.info("Max cooling override for %s: temperature sensor %s is back; using it",
+                         zone.room_name, entity_id)
+        return entity_id, round(value, 2)
+
     @callback
     def evaluate_override(self, data: MsheirebData) -> None:
         """Hysteresis control of room power around the target (runs on every coordinator update)."""
@@ -363,7 +407,7 @@ class DriftManager:
                 if target is None:
                     continue
                 target = float(target)
-                temp = zone.room_temperature
+                _ref, temp = self.override_reference(zone)
                 continuous = target <= min_temp + 0.001
                 if continuous:
                     desired_on = True

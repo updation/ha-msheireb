@@ -87,6 +87,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MsheirebConfigEntry) -> 
     for cid, cd in data.items():
         dev_reg.async_get_or_create(config_entry_id=entry.entry_id, **apartment_device(cid, cd.title))
     entry.async_on_unload(coordinator.async_cancel_pending)
+    entry.async_on_unload(coordinator.async_track_override_sensors())
     _remove_retired_entities(hass, entry)
 
     options_snapshot = dict(entry.options)

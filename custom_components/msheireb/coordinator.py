@@ -13,7 +13,7 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
@@ -46,6 +46,8 @@ from .const import (
     FAN_VERIFY_DELAY,
     FAN_VERIFY_READS,
     OVERRIDE_REFRESH_DELAY,
+    OVERRIDE_SENSOR_DEBOUNCE,
+    CONF_OVERRIDE_SENSORS,
     POWER_CONFIRM_MAX,
     POWER_FOLLOWUP_INTERVAL,
     POWER_POLL_INTERVAL,
@@ -204,6 +206,7 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
         self._cancel_confirm: dict[str, CALLBACK_TYPE] = {}
         self._cancel_followup: dict[str, CALLBACK_TYPE] = {}  # per room: late power change -> finish the sequence
         self._cancel_override_refresh: CALLBACK_TYPE | None = None
+        self._cancel_sensor_eval: CALLBACK_TYPE | None = None
         self._last_fan_press: dict[str, float] = {}
         self._sequences: dict[str, RoomSequence] = {}
         self._offset_listeners: dict[str, list[Callable[[float, float], Awaitable[None]]]] = {}
@@ -1001,7 +1004,33 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
         self._cancel_override_refresh = async_call_later(self.hass, delay, _fire)
 
     @callback
+    def async_track_override_sensors(self) -> CALLBACK_TYPE:
+        """Watch the configured per-room temperature sensors; returns the unsubscribe callback."""
+        sensors = self.config_entry.options.get(CONF_OVERRIDE_SENSORS) or {}
+        ids = sorted({e for e in sensors.values() if e}) if isinstance(sensors, dict) else []
+        if not ids:
+            return lambda: None
+
+        @callback
+        def _fire(_now: Any) -> None:
+            self._cancel_sensor_eval = None
+            if self.data:  # no portal poll: re-run the check on the data we have
+                self.drift.evaluate_override(self.data)
+                self.async_update_listeners()
+
+        @callback
+        def _changed(_event: Any) -> None:
+            if self._cancel_sensor_eval:
+                self._cancel_sensor_eval()
+            self._cancel_sensor_eval = async_call_later(self.hass, OVERRIDE_SENSOR_DEBOUNCE, _fire)
+
+        return async_track_state_change_event(self.hass, ids, _changed)
+
+    @callback
     def async_cancel_pending(self) -> None:
+        if self._cancel_sensor_eval:
+            self._cancel_sensor_eval()
+            self._cancel_sensor_eval = None
         self.door.async_cancel()
         if self._cancel_refresh:
             self._cancel_refresh()

@@ -198,6 +198,9 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         override: dict[str, Any] = {"max_cooling_override": drift.is_override(self._zone_key)}
         if override["max_cooling_override"]:
             override["override_state"] = "idle" if drift.is_paused(self._zone_key) else "cooling"
+            ref, ref_temp = drift.override_reference(zone)
+            override["override_reference"] = ref
+            override["override_reference_temperature"] = ref_temp
         return {
             **override,
             "room": zone.room_name,

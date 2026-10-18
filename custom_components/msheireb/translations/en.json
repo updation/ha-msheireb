@@ -82,7 +82,8 @@
           "fan_auto_when_off": "Fan to Auto when off",
           "unlock_enabled": "Enable door unlock",
           "power_settle": "Power settle time",
-          "fan_settle": "Fan settle time"
+          "fan_settle": "Fan settle time",
+          "edit_room_sensors": "Then choose room temperature sensors"
         },
         "data_description": {
           "min_temp": "Lowest setpoint allowed.",
@@ -98,8 +99,13 @@
           "fan_auto_when_off": "Off sets fan Auto; on restores the previous speed.",
           "unlock_enabled": "Allow the Unlock door button to open the door.",
           "power_settle": "Wait after a power press before checking it.",
-          "fan_settle": "Wait after a fan press before checking it."
+          "fan_settle": "Wait after a fan press before checking it.",
+          "edit_room_sensors": "Tick, then Submit, to pick a sensor per room."
         }
+      },
+      "room_sensors": {
+        "title": "Room temperature sensors",
+        "description": "Optional. For each room you can pick a temperature sensor that the **Max cooling override** uses instead of the air conditioner's own room temperature (for example a sensor placed away from the AC unit).\n\n- Leave a field **empty** (or clear it with the X) to use the AC's own room temperature.\n- If the chosen sensor is unavailable or not a number, the AC's reading is used automatically until the sensor is back.\n- Only the override uses this sensor; the room's shown current temperature stays the AC's.\n- °F sensors are converted to °C."
       }
     },
     "error": {

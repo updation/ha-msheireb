@@ -13,6 +13,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
     BooleanSelector,
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -45,6 +47,7 @@ from .const import (
     DEFAULT_EXTERNAL_CHANGE,
     EXT_MODES,
     CONF_ACCESS_TOKEN,
+    CONF_OVERRIDE_SENSORS,
     CONF_EXPIRES_AT,
     CONF_MAX_RETRIES,
     CONF_MAX_TEMP,
@@ -353,6 +356,8 @@ GRACE_MAX = 3600
 INT_OPTIONS = (CONF_SCAN_INTERVAL, CONF_MAX_RETRIES, CONF_DRIFT_GRACE, CONF_POWER_FAN_DELAY, CONF_POWER_SETTLE, CONF_FAN_SETTLE)
 FLOAT_OPTIONS = (CONF_MIN_TEMP, CONF_MAX_TEMP, CONF_PULSE_INTERVAL)
 
+CONF_EDIT_ROOM_SENSORS = "edit_room_sensors"  # init-form checkbox: continue to the room sensors step
+
 EMAIL_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.EMAIL, autocomplete="username"))
 PASSWORD_SELECTOR = TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD, autocomplete="current-password"))
 
@@ -389,9 +394,16 @@ class MsheirebOptionsFlow(OptionsFlow):
         errors: dict[str, str] = {}
         if user_input is not None:
             user_input = normalize_options(user_input)
+            go_sensors = bool(user_input.pop(CONF_EDIT_ROOM_SENSORS, False))
             if user_input[CONF_MIN_TEMP] >= user_input[CONF_MAX_TEMP]:
                 errors["base"] = "min_ge_max"
             else:
+                current = self.config_entry.options.get(CONF_OVERRIDE_SENSORS)
+                if current:  # the general form must not wipe the per-room sensors
+                    user_input[CONF_OVERRIDE_SENSORS] = dict(current)
+                if go_sensors:
+                    self._general = user_input
+                    return await self.async_step_room_sensors()
                 return self.async_create_entry(data=user_input)
         opts = {**self.config_entry.options, **(user_input or {})}
         schema = vol.Schema(
@@ -454,6 +466,46 @@ class MsheirebOptionsFlow(OptionsFlow):
                 vol.Required(
                     CONF_UNLOCK_ENABLED, default=bool(opts.get(CONF_UNLOCK_ENABLED, DEFAULT_UNLOCK_ENABLED))
                 ): BooleanSelector(),
+                vol.Optional(CONF_EDIT_ROOM_SENSORS, default=False): BooleanSelector(),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
+    def _room_labels(self) -> dict[str, str]:
+        """zone_key -> field label (the label is the form key: room names are not known to strings.json)."""
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        data = (getattr(coordinator, "data", None) or {}) if coordinator is not None else {}
+        rooms = [(cd.title, z) for cd in data.values() for z in cd.zones.values()]
+        names = [z.room_name for _, z in rooms]
+        labels: dict[str, str] = {}
+        for title, zone in rooms:
+            room = f"{title} {zone.room_name}" if names.count(zone.room_name) > 1 else zone.room_name
+            labels[zone.key] = f"{room} \u2013 temperature sensor for Max cooling override"
+        return labels
+
+    async def async_step_room_sensors(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        labels = self._room_labels()
+        general = getattr(self, "_general", None)
+        base = dict(general) if general is not None else dict(self.config_entry.options)
+        current = dict(base.get(CONF_OVERRIDE_SENSORS) or {})
+        if user_input is not None:
+            chosen = {
+                key: user_input[label] for key, label in labels.items() if user_input.get(label)
+            }
+            # keep mappings of rooms that are not listed (e.g. temporarily missing from the portal)
+            chosen.update({k: v for k, v in current.items() if k not in labels and v})
+            base.pop(CONF_OVERRIDE_SENSORS, None)
+            if chosen:
+                base[CONF_OVERRIDE_SENSORS] = chosen
+            return self.async_create_entry(data=base)
+        selector = EntitySelector(EntitySelectorConfig(domain="sensor", device_class="temperature"))
+        fields: dict[Any, Any] = {}
+        for key, label in labels.items():
+            existing = current.get(key)
+            # suggested_value (not default) so the field can be cleared back to "use the AC's reading"
+            fields[vol.Optional(label, description={"suggested_value": existing} if existing else None)] = selector
+        return self.async_show_form(
+            step_id="room_sensors",
+            data_schema=vol.Schema(fields),
+            description_placeholders={"rooms": str(len(labels))},
+        )

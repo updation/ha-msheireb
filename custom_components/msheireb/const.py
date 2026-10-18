@@ -125,6 +125,8 @@ STORE_VERSION = 1
 
 # Max cooling override: the integration cycles room power around the target with hysteresis
 OVERRIDE_HYSTERESIS = 0.5  # °C: off below target - 0.5, on at target + 0.5 or more
+CONF_OVERRIDE_SENSORS = "override_temp_sensors"  # option: {zone_key: sensor entity_id}
+OVERRIDE_SENSOR_DEBOUNCE = 5.0  # s: external sensor change -> override evaluation (own timer)
 OVERRIDE_MIN_TOGGLE_INTERVAL = 180.0  # s: minimum time between override power toggles per room
 
 # Bookmarklet shown in the portal-session steps: copies the portal's localStorage 'msheireb-auth' value
