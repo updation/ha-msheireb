@@ -94,6 +94,7 @@ class MaxCoolingOverrideSwitch(AutoRestoreSwitch):
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         self.coordinator.drift.set_override(self._zone_key, True)
+        self.coordinator.schedule_override_refresh()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         self.coordinator.drift.set_override(self._zone_key, False)

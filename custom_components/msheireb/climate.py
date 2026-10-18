@@ -409,6 +409,7 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
                 role = ROLE_TEMP_UP if needed > 0 else ROLE_TEMP_DOWN
                 if role not in zone.controls:
                     raise HomeAssistantError(f"{self.name}: no {role} control")
+            self.coordinator.schedule_override_refresh()  # override check 10 s after the last change
             if override:
                 # max cooling override: no setpoint presses, the target only drives the hysteresis
                 self.coordinator.drift.set_desired(zone.key, {KIND_TARGET: target})

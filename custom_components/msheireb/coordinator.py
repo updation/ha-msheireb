@@ -45,7 +45,9 @@ from .const import (
     DEFAULT_POWER_FAN_DELAY,
     FAN_VERIFY_DELAY,
     FAN_VERIFY_READS,
+    OVERRIDE_REFRESH_DELAY,
     POWER_CONFIRM_MAX,
+    POWER_FOLLOWUP_INTERVAL,
     POWER_POLL_INTERVAL,
     DEFAULT_MAX_RETRIES,
     DEFAULT_SCAN_INTERVAL,
@@ -200,6 +202,8 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
         self._command_locks: dict[int, asyncio.Lock] = {}
         self._cancel_refresh: CALLBACK_TYPE | None = None
         self._cancel_confirm: dict[str, CALLBACK_TYPE] = {}
+        self._cancel_followup: dict[str, CALLBACK_TYPE] = {}  # per room: late power change -> finish the sequence
+        self._cancel_override_refresh: CALLBACK_TYPE | None = None
         self._last_fan_press: dict[str, float] = {}
         self._sequences: dict[str, RoomSequence] = {}
         self._offset_listeners: dict[str, list[Callable[[float, float], Awaitable[None]]]] = {}
@@ -626,8 +630,10 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
                                   fresh.fan_mode(FAN_ROLES))
                     return time.monotonic() - t0
                 if fresh is None:
-                    _LOGGER.debug("%s: power did not change within %.0f s; nothing else pressed",
+                    _LOGGER.debug("%s: power did not change within %.0f s; nothing else pressed yet",
                                   zone.room_name, self.power_settle + POWER_CONFIRM_MAX)
+                    if any(k in expected for k in (KIND_TARGET, KIND_FAN)):
+                        self._schedule_power_followup(zone.key)
                     return time.monotonic() - t0
                 if not any(k in expected for k in (KIND_TARGET, KIND_FAN)):
                     return time.monotonic() - t0
@@ -663,6 +669,48 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
             if time.monotonic() >= deadline:
                 return None
             await asyncio.sleep(POWER_POLL_INTERVAL)
+
+    @callback
+    def _schedule_power_followup(self, zone_key: str) -> None:
+        """The power change was not seen in time (it can show up later): keep reading the room on a
+        timer of its own (not shared with the refresh scheduling) until the command's confirm
+        timeout and, once the power reads as expected, wait the power -> fan delay and finish the
+        command (fan/setpoint) like the normal sequence would have."""
+        if zone_key in self._cancel_followup:
+            self._cancel_followup.pop(zone_key)()
+
+        @callback
+        def _fire(_now: Any) -> None:
+            self._cancel_followup.pop(zone_key, None)
+            self.config_entry.async_create_task(
+                self.hass, self._async_power_followup(zone_key), f"{DOMAIN}_followup_{zone_key}")
+
+        self._cancel_followup[zone_key] = async_call_later(self.hass, POWER_FOLLOWUP_INTERVAL, _fire)
+
+    async def _async_power_followup(self, zone_key: str) -> None:
+        rec = self.health.commands.get(zone_key)
+        seq = self._sequences.get(zone_key)
+        running = seq is not None and seq.task is not None and not seq.task.done()
+        if (rec is None and not running) or (rec is not None and (
+                rec.result != CMD_PENDING or KIND_POWER not in rec.expected
+                or time.monotonic() >= rec.sent_monotonic + rec.confirm_timeout)):
+            return  # done, superseded, not tracked, or the confirm-timeout retry has taken over
+        if rec is not None and not rec.retrying and not running:
+            cd = (self.data or {}).get(rec.contract_id)
+            zone = cd.zones.get(zone_key) if cd else None
+            try:
+                fresh = await self.async_read_zone(zone) if zone is not None else None
+            except MsheirebError:
+                fresh = None
+            if fresh is not None and fresh.power is rec.expected[KIND_POWER] and not rec.retrying \
+                    and rec.result == CMD_PENDING and self.health.commands.get(zone_key) is rec:
+                rec.retrying = True  # keeps refresh-driven retries away while we finish
+                _LOGGER.debug("%s: power now reads %s; finishing the command", rec.room,
+                              "on" if rec.expected[KIND_POWER] else "off")
+                await asyncio.sleep(self.power_fan_delay)
+                await self._async_retry(rec, followup=True)
+                return
+        self._schedule_power_followup(zone_key)
 
     @property
     def power_settle(self) -> float:
@@ -716,8 +764,9 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
             rec.last_fan_press = self._last_fan_press.get(zone.key)
         return sent
 
-    async def _async_retry(self, rec: CommandRecord) -> None:
-        """Re-read the actual state and send only what is still needed."""
+    async def _async_retry(self, rec: CommandRecord, followup: bool = False) -> None:
+        """Re-read the actual state and send only what is still needed (`followup`: finishing a
+        command whose power change was seen late; not counted as a retry)."""
         _SEQ.set(_RecGuard(rec))
         try:
             async with self.command_lock(rec.contract_id or 0):
@@ -740,8 +789,9 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
                     self._schedule_verify_refresh(rec, FAN_VERIFY_DELAY)
                     self._schedule_confirm_check(rec)
                     return
-                rec.retries += 1
-                self.health.command_retries += 1
+                if not followup:
+                    rec.retries += 1
+                    self.health.command_retries += 1
                 new: list[dict[str, Any]] = []
                 started = time.monotonic()
                 waited = 0.0
@@ -883,6 +933,8 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
         if rec is not None and (rec.result == CMD_PENDING or rec.retrying):
             found = True
             rec.result = CMD_SUPERSEDED
+            if zone_key in self._cancel_followup:
+                self._cancel_followup.pop(zone_key)()
             for key in (zone_key, f"verify_{zone_key}"):
                 if key in self._cancel_confirm:
                     self._cancel_confirm.pop(key)()
@@ -935,6 +987,20 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
         self._cancel_refresh = async_call_later(self.hass, delay, _fire)
 
     @callback
+    def schedule_override_refresh(self, delay: float = OVERRIDE_REFRESH_DELAY) -> None:
+        """Extra refresh (runs the max cooling override check) `delay` s after a target change or
+        override switch-on; repeated calls restart the wait. Own timer, never shared."""
+        if self._cancel_override_refresh:
+            self._cancel_override_refresh()
+
+        @callback
+        def _fire(_now: Any) -> None:
+            self._cancel_override_refresh = None
+            self.hass.async_create_task(self.async_refresh())
+
+        self._cancel_override_refresh = async_call_later(self.hass, delay, _fire)
+
+    @callback
     def async_cancel_pending(self) -> None:
         self.door.async_cancel()
         if self._cancel_refresh:
@@ -943,3 +1009,9 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
         for cancel in self._cancel_confirm.values():
             cancel()
         self._cancel_confirm.clear()
+        for cancel in self._cancel_followup.values():
+            cancel()
+        self._cancel_followup.clear()
+        if self._cancel_override_refresh:
+            self._cancel_override_refresh()
+            self._cancel_override_refresh = None

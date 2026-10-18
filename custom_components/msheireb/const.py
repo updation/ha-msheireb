@@ -40,6 +40,7 @@ RAW_TEMP_SCALE = 100  # API reports C x 100
 PULSE_INTERVAL = 5.0  # default; see CONF_PULSE_INTERVAL
 PULSES_BETWEEN_READS = 3  # re-read setpoint every N pulses
 REFRESH_AFTER_COMMAND = 5.0  # seconds
+OVERRIDE_REFRESH_DELAY = 10.0  # s after a target change / override switch-on: extra refresh (debounced)
 # Power -> fan sequencing (real unit: a fan press sent while the AC is still starting is lost)
 CONF_UNLOCK_ENABLED = "unlock_enabled"
 DEFAULT_UNLOCK_ENABLED = False  # the door-unlock button refuses to work unless this is on
@@ -58,6 +59,7 @@ DEFAULT_POWER_FAN_DELAY = 5  # seconds after power is confirmed before the fan p
 POWER_FAN_DELAY_MAX = 30
 POWER_POLL_INTERVAL = 2.0  # seconds between reads while waiting for the power change
 POWER_CONFIRM_MAX = 30.0  # give up this long after the settle time if the power did not change
+POWER_FOLLOWUP_INTERVAL = 5.0  # after that: keep reading the room this often (until the confirm timeout)
 FAN_VERIFY_DELAY = 5.0  # min gap between the two fan verification reads (the first waits the fan settle time)
 FAN_VERIFY_READS = 2  # consecutive matching reads needed to confirm a fan change
 OPTIMISTIC_TIMEOUT = 25.0  # seconds before an unconfirmed optimistic value is dropped

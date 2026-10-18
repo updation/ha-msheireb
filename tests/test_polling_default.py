@@ -74,10 +74,10 @@ async def test_command_confirmed_by_post_command_refresh_not_by_poll(hass, freez
     await _advance(hass, freezer, 6)  # ~5 s post-command refresh, far before the 300 s poll
     assert len(fetches) == 1
     assert hass.states.get(LAST).state == "confirmed"
-    await _advance(hass, freezer, 60)  # nothing else polls until the regular interval
-    assert len(fetches) == 1
-    await _advance(hass, freezer, 240)
+    await _advance(hass, freezer, 60)  # only the extra 10 s override refresh (v0.3.28), no polling
     assert len(fetches) == 2
+    await _advance(hass, freezer, 300)  # the extra refresh restarted the 300 s poll timer
+    assert len(fetches) == 3
 
 
 async def test_unconfirmed_command_checked_at_window_end_and_retried(hass, freezer):
