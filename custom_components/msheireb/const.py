@@ -124,7 +124,10 @@ DRIFT_MIN_POLLS = 2
 STORE_VERSION = 1
 
 # Max cooling override: the integration cycles room power around the target with hysteresis
-OVERRIDE_HYSTERESIS = 0.5  # °C: off below target - 0.5, on at target + 0.5 or more
+OVERRIDE_HYSTERESIS = 0.5  # °C: default margin: off below target - margin, on at target + margin or more
+OVERRIDE_MARGIN_MIN = 0.1  # per-room margin (number entity) range / step
+OVERRIDE_MARGIN_MAX = 2.0
+OVERRIDE_MARGIN_STEP = 0.1
 CONF_OVERRIDE_SENSORS = "override_temp_sensors"  # option: {zone_key: sensor entity_id}
 OVERRIDE_SENSOR_DEBOUNCE = 5.0  # s: external sensor change -> override evaluation (own timer)
 OVERRIDE_MIN_TOGGLE_INTERVAL = 180.0  # s: minimum time between override power toggles per room

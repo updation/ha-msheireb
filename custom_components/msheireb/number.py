@@ -9,7 +9,9 @@ from homeassistant.const import EntityCategory, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import OFFSET_MAX, OFFSET_MIN, OFFSET_STEP
+from .const import (
+    OFFSET_MAX, OFFSET_MIN, OFFSET_STEP, OVERRIDE_MARGIN_MAX, OVERRIDE_MARGIN_MIN, OVERRIDE_MARGIN_STEP,
+)
 from .coordinator import MsheirebCoordinator
 from .entity import room_device, room_entity_id, zone_needs_disambiguation
 
@@ -30,6 +32,9 @@ async def async_setup_entry(
                     ent = TargetOffsetNumber(coordinator, zone, zone_needs_disambiguation(cd, zone))
                     ent.entity_id = room_entity_id("number", cd, zone, "target temperature offset")
                     new.append(ent)
+                    ment = OverrideMarginNumber(coordinator, zone, zone_needs_disambiguation(cd, zone))
+                    ment.entity_id = room_entity_id("number", cd, zone, "max cooling override margin")
+                    new.append(ment)
         if new:
             async_add_entities(new)
 
@@ -71,4 +76,37 @@ class TargetOffsetNumber(NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         await self.coordinator.async_set_offset(self._zone_key, value)
+        self.async_write_ha_state()
+
+
+class OverrideMarginNumber(NumberEntity):
+    """Max cooling override switching margin: room off below target - margin, on at target + margin."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_translation_key = "override_margin"
+    _attr_icon = "mdi:thermometer-lines"
+    _attr_mode = NumberMode.BOX
+    _attr_native_min_value = OVERRIDE_MARGIN_MIN
+    _attr_native_max_value = OVERRIDE_MARGIN_MAX
+    _attr_native_step = OVERRIDE_MARGIN_STEP
+    # a difference, not a temperature: no device class, never unit-converted
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+
+    def __init__(self, coordinator: MsheirebCoordinator, zone, disambiguate: bool = False) -> None:
+        self.coordinator = coordinator
+        self._zone_key = zone.key
+        self._attr_unique_id = f"{zone.key}_override_margin"
+        self._attr_device_info = room_device(zone, disambiguate)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(self.coordinator.async_add_health_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> float:
+        return self.coordinator.drift.margin(self._zone_key)
+
+    async def async_set_native_value(self, value: float) -> None:
+        await self.coordinator.async_set_override_margin(self._zone_key, value)
         self.async_write_ha_state()

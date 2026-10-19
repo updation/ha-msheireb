@@ -96,7 +96,7 @@
           "drift_grace": "How long a change must persist before acting.",
           "adopt_external": "Keep external changes instead of restoring.",
           "power_fan_delay": "Wait after power changes before the fan press.",
-          "fan_auto_when_off": "Off sets fan Auto; on restores the previous speed.",
+          "fan_auto_when_off": "On: turning off also sets fan Auto; off: power only.",
           "unlock_enabled": "Allow the Unlock door button to open the door.",
           "power_settle": "Wait after a power press before checking it.",
           "fan_settle": "Wait after a fan press before checking it.",
@@ -213,6 +213,9 @@
     "number": {
       "target_offset": {
         "name": "Target temperature offset"
+      },
+      "override_margin": {
+        "name": "Max cooling override margin"
       }
     },
     "button": {

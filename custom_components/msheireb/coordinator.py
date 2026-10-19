@@ -562,6 +562,18 @@ class MsheirebCoordinator(DataUpdateCoordinator[MsheirebData]):
         self.notify_health()
         return new
 
+    async def async_set_override_margin(self, zone_key: str, value: float) -> float:
+        """Store a room's Max cooling override margin and re-check the override (debounced 10 s)."""
+        old = self.drift.margin(zone_key)
+        new = self.drift.set_margin(zone_key, value)
+        if new != old:
+            _LOGGER.debug("%s: override margin %.1f -> %.1f °C", zone_key, old, new)
+            if self.drift.is_override(zone_key):
+                self.schedule_override_refresh()
+                self.async_update_listeners()  # climate attribute override_margin
+        self.notify_health()
+        return new
+
     @property
     def max_retries(self) -> int:
         return int(self.config_entry.options.get(CONF_MAX_RETRIES, DEFAULT_MAX_RETRIES))

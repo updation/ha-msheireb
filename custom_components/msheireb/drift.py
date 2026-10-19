@@ -33,6 +33,9 @@ from .const import (
     OFFSET_MIN,
     OFFSET_STEP,
     OVERRIDE_HYSTERESIS,
+    OVERRIDE_MARGIN_MAX,
+    OVERRIDE_MARGIN_MIN,
+    OVERRIDE_MARGIN_STEP,
     OVERRIDE_MIN_TOGGLE_INTERVAL,
     ROLE_FAN_AUTO,
     STORE_VERSION,
@@ -73,6 +76,12 @@ def clamp_offset(value: Any) -> float:
     """Bound a target offset to OFFSET_MIN..OFFSET_MAX in OFFSET_STEP steps."""
     v = round(float(value) / OFFSET_STEP) * OFFSET_STEP
     return round(min(OFFSET_MAX, max(OFFSET_MIN, v)), 1) + 0.0  # + 0.0: no -0.0
+
+
+def clamp_margin(value: Any) -> float:
+    """Bound a Max cooling override margin to OVERRIDE_MARGIN_MIN..MAX in OVERRIDE_MARGIN_STEP steps."""
+    v = round(float(value) / OVERRIDE_MARGIN_STEP) * OVERRIDE_MARGIN_STEP
+    return round(min(OVERRIDE_MARGIN_MAX, max(OVERRIDE_MARGIN_MIN, v)), 1)
 
 
 def describe(kind: str, value: Any) -> str:
@@ -125,6 +134,8 @@ class DriftManager:
     override: dict[str, bool] = field(default_factory=dict)
     override_paused: set[str] = field(default_factory=set)
     override_last_toggle: dict[str, float] = field(default_factory=dict)
+    # zone_key -> Max cooling override margin (°C), only stored when not the default
+    margins: dict[str, float] = field(default_factory=dict)
     # rooms whose configured external sensor is currently unusable (AC reading used): warn once
     sensor_fallback: set[str] = field(default_factory=set)
 
@@ -150,13 +161,20 @@ class DriftManager:
                 continue
         self.offset_pending = {str(k) for k in data.get("offset_pending") or []}
         self.override = {k: bool(v) for k, v in (data.get("override") or {}).items() if v}
+        self.margins = {}
+        for k, v in (data.get("margins") or {}).items():
+            try:
+                if abs(clamp_margin(v) - OVERRIDE_HYSTERESIS) > 1e-9:
+                    self.margins[k] = clamp_margin(v)
+            except (TypeError, ValueError):
+                continue
         self.override_paused = {str(k) for k in data.get("override_paused") or [] if self.override.get(str(k))}
 
     def _data_to_save(self) -> dict[str, Any]:
         return {"desired": self.desired, "auto_restore": self.auto_restore, "prev_fan": self.prev_fan,
                 "last_fan": self.last_fan,
                 "offsets": self.offsets, "offset_pending": sorted(self.offset_pending),
-                "override": self.override, "override_paused": sorted(self.override_paused)}
+                "override": self.override, "margins": self.margins, "override_paused": sorted(self.override_paused)}
 
     @callback
     def _save(self) -> None:
@@ -259,6 +277,19 @@ class DriftManager:
     # ---------------------------------------------------------------- max cooling override
     def is_override(self, zone_key: str) -> bool:
         return self.override.get(zone_key, False)
+
+    def margin(self, zone_key: str) -> float:
+        return self.margins.get(zone_key, OVERRIDE_HYSTERESIS)
+
+    @callback
+    def set_margin(self, zone_key: str, value: Any) -> float:
+        value = clamp_margin(value)
+        if abs(value - OVERRIDE_HYSTERESIS) > 1e-9:
+            self.margins[zone_key] = value
+        else:
+            self.margins.pop(zone_key, None)
+        self._save()
+        return value
 
     def is_paused(self, zone_key: str) -> bool:
         """Room power is off because of the override (desired state stays Cool/on)."""
@@ -408,14 +439,15 @@ class DriftManager:
                     continue
                 target = float(target)
                 _ref, temp = self.override_reference(zone)
+                margin = self.margin(key)
                 continuous = target <= min_temp + 0.001
                 if continuous:
                     desired_on = True
                 elif temp is None:
                     continue
-                elif temp < target - OVERRIDE_HYSTERESIS - 1e-9:
+                elif temp < target - margin - 1e-9:
                     desired_on = False
-                elif temp >= target + OVERRIDE_HYSTERESIS - 1e-9:
+                elif temp >= target + margin - 1e-9:
                     desired_on = True
                 else:
                     desired_on = zone.power  # between the thresholds: keep the current state

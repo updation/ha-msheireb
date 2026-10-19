@@ -80,6 +80,7 @@ async def test_v030_entry_with_old_registry_upgrades_to_room_devices(hass, aiocl
     names = {e.entity_id for e in er.async_entries_for_device(ent_reg, dining.id)}
     assert names == {"climate.msheireb_demo01_dining_room", "switch.msheireb_demo01_dining_room_auto_restore",
                      "switch.msheireb_demo01_dining_room_max_cooling_override",
+                     "number.msheireb_demo01_dining_room_max_cooling_override_margin",
                      "sensor.msheireb_demo01_dining_room_last_command",
                      "number.msheireb_demo01_dining_room_target_temperature_offset"}
 

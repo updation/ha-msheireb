@@ -199,6 +199,7 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         if override["max_cooling_override"]:
             override["override_state"] = "idle" if drift.is_paused(self._zone_key) else "cooling"
             ref, ref_temp = drift.override_reference(zone)
+            override["override_margin"] = drift.margin(self._zone_key)
             override["override_reference"] = ref
             override["override_reference_temperature"] = ref_temp
         return {
