@@ -27,6 +27,36 @@ Unofficial custom integration for the in-apartment AC (fan coil units) at **Mshe
   - Turning the room Off (HVAC or fan Off) stops cycling. The paused phases are not treated as external changes. Switching the override off powers a paused room back on and applies the setpoint normally.
   - **Attributes** on the climate entity: `max_cooling_override`, and while it is on `override_state` (`cooling` / `idle`), `override_margin`, `override_reference` (`ac` or the sensor's entity id) and `override_reference_temperature` (°C used for the decision).
 - **Saved fan speed** (v0.3.25): the climate entity shows a `saved_fan_mode` attribute: the speed re-applied on the next turn-on from HA (`low`, `medium`, `high` or `auto`, the same values `climate.set_fan_mode` takes). It never shows `off` and is empty when no speed is known. A speed picked while the room is off, or while the override is idle, is stored here too. Use it in automations, e.g. to skip setting a speed you already picked. A `last_fan_mode` attribute (v0.3.26) shows the exact fan mode last chosen from HA with `climate.set_fan_mode` or by turning the room off: `off`, `low`, `medium`, `high` or `auto`, including `off`. It is saved across restarts and empty until a fan mode or Off is chosen from HA.
+- **Save and restore a room's state** (services `msheireb.save_state` and `msheireb.restore_state`): remember a room's fan mode (`off` if the room is off), power and target temperature under a name of your choice (a *slot*, e.g. `door` or `co2`; not case sensitive), and bring them back later. Each room has its own slots and you can use several at once; they are saved across restarts and listed in the climate attribute `saved_states` (slot → fan mode) and in diagnostics.
+  - `save_state`: target = one or more Msheireb climate entities; `slot` (required); `overwrite` (default on; off keeps an existing slot). Nothing is sent to the AC.
+  - `restore_state`: same target; `slot` (required); `clear` (default on: delete the slot after restoring; off keeps it). Saved Off turns the room off. Otherwise the target is set, then the fan speed (which turns the room on), as one queued command. An unknown slot does nothing (logged at info level).
+  - With the Max cooling override on, restore sets the target and the speed but the override keeps control of the power; restoring Off turns the room off as usual. The saved target is the one you see on the card.
+
+  ```yaml
+  automation:
+    - alias: Balcony door open - AC off, then back
+      triggers:
+        - trigger: state
+          entity_id: binary_sensor.balcony_door
+          to: "on"
+          for: "00:01:00"
+      actions:
+        - action: msheireb.save_state
+          target: { entity_id: climate.living_room }
+          data: { slot: door, overwrite: false }
+        - action: climate.set_fan_mode
+          target: { entity_id: climate.living_room }
+          data: { fan_mode: "off" }
+    - alias: Balcony door closed - restore the AC
+      triggers:
+        - trigger: state
+          entity_id: binary_sensor.balcony_door
+          to: "off"
+      actions:
+        - action: msheireb.restore_state
+          target: { entity_id: climate.living_room }
+          data: { slot: door }
+  ```
 - **Diagnostics download** (Settings → Devices & services → Msheireb → ⋮ → Download diagnostics), with credentials, tokens, IPs, unit/contract IDs and lock names redacted.
 - Supports multiple contracts on one account. Polls every 5 min by default (configurable 15–600 s); after each command it refreshes on its own schedule (see below), independent of the polling interval.
 

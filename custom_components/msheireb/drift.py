@@ -126,6 +126,8 @@ class DriftManager:
     prev_fan: dict[str, str] = field(default_factory=dict)  # zone_key -> fan speed before HA turned it off
     # zone_key -> exact last fan mode chosen from HA (set_fan_mode / turn off), incl. 'off'
     last_fan: dict[str, str] = field(default_factory=dict)
+    # zone_key -> {slot: {"fan": str|None, "power": bool, "target": float|None}} (save_state / restore_state)
+    saved: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     # zone_key -> target offset (°C): the AC is driven to (shown target + offset)
     offsets: dict[str, float] = field(default_factory=dict)
     # rooms whose offset changed while off: the new offset is applied on the next turn-on from HA
@@ -149,6 +151,17 @@ class DriftManager:
         self.auto_restore = {k: bool(v) for k, v in (data.get("auto_restore") or {}).items()}
         self.prev_fan = {k: str(v) for k, v in (data.get("prev_fan") or {}).items() if v and v != FAN_OFF}
         self.last_fan = {k: str(v) for k, v in (data.get("last_fan") or {}).items() if v}
+        self.saved = {}
+        for k, slots in (data.get("saved") or {}).items():
+            if not isinstance(slots, dict):
+                continue
+            for slot, st in slots.items():
+                if isinstance(st, dict):
+                    self.saved.setdefault(str(k), {})[str(slot)] = {
+                        "fan": str(st["fan"]) if st.get("fan") else None,
+                        "power": bool(st.get("power")),
+                        "target": float(st["target"]) if isinstance(st.get("target"), (int, float)) else None,
+                    }
         for want in self.desired.values():
             if want.get("fan") == FAN_OFF:
                 want.pop("fan")  # 'off' is a power state, never a desired fan speed
@@ -172,7 +185,7 @@ class DriftManager:
 
     def _data_to_save(self) -> dict[str, Any]:
         return {"desired": self.desired, "auto_restore": self.auto_restore, "prev_fan": self.prev_fan,
-                "last_fan": self.last_fan,
+                "last_fan": self.last_fan, "saved": self.saved,
                 "offsets": self.offsets, "offset_pending": sorted(self.offset_pending),
                 "override": self.override, "margins": self.margins, "override_paused": sorted(self.override_paused)}
 
@@ -251,6 +264,23 @@ class DriftManager:
         """Record the exact fan mode last chosen from HA ('off' when the room was turned off)."""
         if self.last_fan.get(zone_key) != mode:
             self.last_fan[zone_key] = mode
+            self._save()
+
+    @callback
+    def save_slot(self, zone_key: str, slot: str, state: dict[str, Any], overwrite: bool = True) -> bool:
+        """Store a named room state; False (nothing changed) if the slot exists and overwrite is off."""
+        slots = self.saved.setdefault(zone_key, {})
+        if slot in slots and not overwrite:
+            return False
+        slots[slot] = dict(state)
+        self._save()
+        return True
+
+    @callback
+    def delete_slot(self, zone_key: str, slot: str) -> None:
+        if self.saved.get(zone_key, {}).pop(slot, None) is not None:
+            if not self.saved[zone_key]:
+                del self.saved[zone_key]
             self._save()
 
     @callback

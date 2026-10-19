@@ -16,7 +16,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+import voluptuous as vol
 
 from .api import MsheirebError
 from .const import (
@@ -42,6 +45,19 @@ from .models import HvacZone
 
 _LOGGER = logging.getLogger(__name__)
 
+SERVICE_SAVE_STATE = "save_state"
+SERVICE_RESTORE_STATE = "restore_state"
+ATTR_SLOT = "slot"
+ATTR_OVERWRITE = "overwrite"
+ATTR_CLEAR = "clear"
+
+
+def _slot_name(slot: str) -> str:
+    name = slot.strip().lower()
+    if not name:
+        raise HomeAssistantError("The slot name must not be empty")
+    return name
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -64,6 +80,18 @@ async def async_setup_entry(
         if new:
             _LOGGER.debug("Adding %d climate entit(ies): %s", len(new), [e.unique_id for e in new])
             async_add_entities(new)
+
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        SERVICE_SAVE_STATE,
+        {vol.Required(ATTR_SLOT): cv.string, vol.Optional(ATTR_OVERWRITE, default=True): cv.boolean},
+        "async_save_state",
+    )
+    platform.async_register_entity_service(
+        SERVICE_RESTORE_STATE,
+        {vol.Required(ATTR_SLOT): cv.string, vol.Optional(ATTR_CLEAR, default=True): cv.boolean},
+        "async_restore_state",
+    )
 
     _add_new()
     entry.async_on_unload(coordinator.async_add_listener(_add_new))
@@ -112,6 +140,10 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
         # requested state (power/fan/target) shown while the room's sequence + retries are in flight
         self._intent: dict[str, Any] = {}
         self._fan_if_differs = False
+        # restore_state: the target part is queued (not launched) so the fan part launches one sequence
+        self._defer_launch = False
+        self._deferred = False
+        self._deferred_debounce = 0.0
 
     # ------------------------------------------------------------ state
     @property
@@ -211,6 +243,7 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
             "device_setpoint": zone.setpoint,
             "saved_fan_mode": self._saved_fan_mode(),
             "last_fan_mode": self.coordinator.drift.last_fan.get(self._zone_key),
+            "saved_states": {slot: st.get("fan") for slot, st in drift.saved.get(self._zone_key, {}).items()},
         }
 
     def _saved_fan_mode(self) -> str | None:
@@ -342,6 +375,13 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
                 self._fan_if_differs = not fan_auto
 
     async def _start_if_needed(self, zone: HvacZone, debounce: float = 0.0) -> None:
+        if self._defer_launch:
+            self._deferred = True
+            self._deferred_debounce = max(self._deferred_debounce, debounce)
+            return
+        debounce = max(debounce, self._deferred_debounce)
+        self._deferred = False
+        self._deferred_debounce = 0.0
         if not self.coordinator.room_busy(self._zone_key) and self.coordinator.zone_matches_target(zone, self._intent):
             self.coordinator.async_set_desired(zone.key, dict(self._intent))
             self._intent.clear()
@@ -424,3 +464,56 @@ class MsheirebClimate(MsheirebEntity, ClimateEntity):
                 self._intent[KIND_TARGET] = target
                 debounce = TEMP_DEBOUNCE  # rapid +/- taps: one target, pressed after the taps stop
         await self._start_if_needed(zone, debounce)
+
+    # ------------------------------------------------------------ save / restore a named state
+    async def async_save_state(self, slot: str, overwrite: bool = True) -> None:
+        """Store the room's fan mode ('off' when off), power and wanted target under `slot`."""
+        slot = _slot_name(slot)
+        drift = self.coordinator.drift
+        zone = self.zone
+        power = self.hvac_mode == HVACMode.COOL
+        fan = self.fan_mode
+        if self._fan_off and not power:
+            fan = FAN_OFF
+        elif fan is None:
+            fan = self._saved_fan_mode()
+        target = self.target_temperature
+        state = {"fan": fan, "power": power, "target": float(target) if target is not None else None}
+        if zone is None or self.hvac_mode is None:
+            raise HomeAssistantError(f"{self.name}: state not available, nothing saved")
+        if drift.save_slot(self._zone_key, slot, state, overwrite):
+            _LOGGER.info("%s: saved state '%s': %s", self.entity_id, slot, state)
+        else:
+            _LOGGER.info("%s: slot '%s' already exists, kept (overwrite is off)", self.entity_id, slot)
+        self.async_write_ha_state()
+
+    async def async_restore_state(self, slot: str, clear: bool = True) -> None:
+        """Re-apply a saved state through the normal commands (target first, then fan / power)."""
+        slot = _slot_name(slot)
+        drift = self.coordinator.drift
+        state = drift.saved.get(self._zone_key, {}).get(slot)
+        if state is None:
+            _LOGGER.info("%s: no saved state '%s', nothing restored", self.entity_id, slot)
+            return
+        fan, target = state.get("fan"), state.get("target")
+        if fan == FAN_OFF or (not state.get("power") and ROLE_POWER in (self.zone.controls if self.zone else ())):
+            await self.async_set_hvac_mode(HVACMode.OFF)  # user off, same as fan 'off'
+        else:
+            self._require_zone()
+            try:
+                if target is not None:
+                    self._defer_launch = True
+                    try:
+                        await self.async_set_temperature(**{ATTR_TEMPERATURE: target})
+                    finally:
+                        self._defer_launch = False
+                if fan in self._fan_roles:
+                    await self.async_set_fan_mode(fan)
+                elif state.get("power") and self.hvac_mode == HVACMode.OFF:
+                    await self.async_set_hvac_mode(HVACMode.COOL)
+            finally:
+                if self._deferred:  # nothing launched it (e.g. no fan part): do it now
+                    await self._start_if_needed(self._require_zone())
+        if clear:
+            drift.delete_slot(self._zone_key, slot)
+        self.async_write_ha_state()

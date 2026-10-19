@@ -1,0 +1,47 @@
+save_state:
+  name: Save room state
+  description: >-
+    Remember this room's current fan mode (Off if the room is off), power and target temperature under a name of
+    your choice, so that restore_state can bring them back later. Nothing is sent to the air conditioner.
+  target:
+    entity:
+      integration: msheireb
+      domain: climate
+  fields:
+    slot:
+      name: Slot name
+      description: Name to save under, for example door or co2. Not case sensitive. Each room has its own slots.
+      required: true
+      example: door
+      selector:
+        text:
+    overwrite:
+      name: Overwrite existing slot
+      description: If off and this slot already holds a saved state, the old one is kept.
+      default: true
+      selector:
+        boolean:
+restore_state:
+  name: Restore room state
+  description: >-
+    Bring the room back to a state saved with save_state, using the normal commands: Off turns the room off,
+    otherwise the target temperature is set and then the fan speed (which turns the room on). With the Max
+    cooling override on, the override keeps control of the power. An unknown slot does nothing.
+  target:
+    entity:
+      integration: msheireb
+      domain: climate
+  fields:
+    slot:
+      name: Slot name
+      description: The name used with save_state.
+      required: true
+      example: door
+      selector:
+        text:
+    clear:
+      name: Delete slot after restoring
+      description: Remove the slot once restored. Turn off to keep it for another restore.
+      default: true
+      selector:
+        boolean:
