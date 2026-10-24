@@ -28,8 +28,8 @@ DEFAULT_MAX_TEMP = 30.0
 DEFAULT_SCAN_INTERVAL = 300  # seconds (5 min); commands get their own refreshes
 
 # Per-room target temperature offset (number entity): the AC is driven to target + offset
-OFFSET_MIN = -3.0
-OFFSET_MAX = 3.0
+OFFSET_MIN = -4.0
+OFFSET_MAX = 4.0
 OFFSET_STEP = 0.5
 # Physical setpoint limits of the AC, if known (None = unknown: target + offset is not clamped)
 DEVICE_MIN_SETPOINT: float | None = None

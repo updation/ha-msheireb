@@ -34,7 +34,7 @@ async def test_offset_entity_defaults(hass):
     entry, coord, api = await _setup(hass)
     s = hass.states.get(OFFSET)
     assert float(s.state) == 0.0
-    assert s.attributes["min"] == -3.0 and s.attributes["max"] == 3.0 and s.attributes["step"] == 0.5
+    assert s.attributes["min"] == -4.0 and s.attributes["max"] == 4.0 and s.attributes["step"] == 0.5
     assert s.attributes["mode"] == "box" and s.attributes["unit_of_measurement"] == "°C"
     assert s.attributes["friendly_name"] == "Dining Room Target temperature offset"
     from homeassistant.helpers import entity_registry as er
@@ -150,8 +150,11 @@ async def test_min_max_apply_to_shown_target(hass, fast_sleep):
 
 async def test_offset_bounded(hass):
     entry, coord, api = await _setup(hass)
-    assert [clamp_offset(v) for v in (-5, -3.2, -1.3, -0.2, 0.26, 1.74, 9)] == [-3.0, -3.0, -1.5, 0.0, 0.5, 1.5, 3.0]
-    for bad in (3.5, -3.5):
+    assert [clamp_offset(v) for v in (-5, -4.2, -3.2, -1.3, -0.2, 0.26, 1.74, 9)] == [-4.0, -4.0, -3.0, -1.5, 0.0, 0.5, 1.5, 4.0]
+    for ok in (4.0, -4.0, 3.5, -3.5):
+        await _set_offset(hass, ok)
+        assert float(hass.states.get(OFFSET).state) == ok
+    for bad in (4.5, -4.5):
         with pytest.raises(ServiceValidationError):
             await _set_offset(hass, bad)
     await _set_offset(hass, 1.2)  # in range but off-step: snapped to 0.5 steps
